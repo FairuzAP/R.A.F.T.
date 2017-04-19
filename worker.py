@@ -19,8 +19,9 @@ verbose = True
 id = 1
 
 
-# Method to load the conf.txt file, and write to workerhost and balancerhost
 def load_conf():
+    # Method to load the conf.txt file, and write to workerhost and balancerhost
+
     # Try opening the config file
     try:
         conf = open("conf.txt","r",1)
@@ -41,8 +42,9 @@ def load_conf():
     print("Config file loaded successfully")
 
 
-# Get the desired port and the server ID from the conf
 def get_port():
+    # Get the desired port and the server ID from the conf
+
     global id
     print("There seems to be " +workerhost.__len__().__str__()+ " worker hosts in the system:")
     for host in workerhost:
@@ -59,13 +61,15 @@ def get_port():
         exit()
 
 
-# Get the current main thread workload
 def get_workload():
+    # Get the current main thread workload
+
     return psutil.Process(pid).cpu_percent(interval=daemon_delay)
 
 
-# Periodically broadcast workload to all balancerhost
 def worker_daemon_method():
+    # Periodically broadcast workload to all balancerhost
+
     while(True):
         current_workload = get_workload().__str__()
         if verbose:
@@ -78,8 +82,8 @@ def worker_daemon_method():
         sleep(daemon_delay)
 
 
-# The main worker server class
 class WorkerHandler(BaseHTTPRequestHandler):
+    # The main worker server class
 
     def prime(self, n):
         i = 2
@@ -112,8 +116,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
             print(ex)
 
 
-# Thread class that will be used to send
 class SendWorkload(Thread):
+    # Thread class that will be used to send
+
     def __init__(self, url, timeout):
         Thread.__init__(self)
         self.url = url
