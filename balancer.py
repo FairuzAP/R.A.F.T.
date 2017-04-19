@@ -7,147 +7,112 @@ from os import getpid
 from threading import Thread
 from requests import get
 from sys import exit
+from storage import workerLoad, loadLog
+import json
 
 
 # Global Variable definition
 workerhost = []
 balancerhost = []
-append_delay = 0.5
+append_delay = 0.1
 verbose = True
-id = 1
-
-
-class workerLoad():
-    # Interface to store every worker load and up/down information,
-    # Can volatile for debugging; MUST be implemented into stable storage later
-
-    def init_data(self):
-        # Called after configuration file has been loaded,
-        # Initiate the data needed to store every worker load information
-        global workerhost
-        # TODO: Implement this method (can be volatile for now or stable if possible)
-        pass
-
-    def set_load(self, id, load):
-        # Set the load of the appropriate worker, Load of -1 means the node is down for now
-        pass
-
-    def get_idle_worker(self):
-        # Return the id of the most idle worker host
-        pass
-
-
-class loadLog():
-    # Interface to store the RAFT log, where each "act" is an invocation of the workerLoad set_load method
-    # Can volatile for debugging; MUST be implemented into stable storage later
-
-    def init_data(self):
-        # Called after configuration file has been loaded,
-        # Initiate the data needed to store the RAFT log
-        # TODO: Implement this method (can be volatile for now or stable if possible)
-        pass
-
-    def is_consistent(self, log_id, term):
-        # Return wether or not a log with the supplied id can be filled with the supplied term
-        pass
-
-    def append_log(self, term, worker_id, worker_load):
-        # Append the log with the supplied data and return true if consistent, else return false
-        pass
-
-    def replace_log(self, log_id, term, worker_id, worker_load):
-        # Replace the log with the supplied data and return true if consistent, else return false
-        # If the id is in the middle, then delete all the following log
-        pass
-
-    def get_log(self, log_id):
-        # Return the log object in this id in form of a dictionary; None if doesn't exist
-        return {
-            'log_id' : 0,
-            'log_term' : 0,
-            'worker_id' : 0,
-            'worker_load' : 0
-        }
-
-    def commit_log(self, log_id, worker_load):
-        # Mark the supplied id log as committed, and pass the changes instructed to the workerLoad object
-        # If the supplied id is already committed, then return true
-        # If id-1 hasn't been commited yet, then something BAD is going on
-        pass
-
-    def is_commited(self, log_id):
-        # Return wether or not the log with the supplied id is commited
-        pass
-
-    def get_size(self):
-        # Return the next log id (the one not used yet)
-        pass
-
-    def get_last_commited_id(self):
-        pass
+server_id = 1
 
 
 # Global variables containing server critical information
 worker_load = workerLoad()  # The global worker load storage interface
 load_log = loadLog()        # The global RAFT log storage interface
 state = 0                   # The state of the server, 0=Follower, 1=Candidate, 2=Leader
+leader_heart = None         # Will contains the handler to heartbeat thread if the state is the leader
 # TODO: Move the variables below into being stored in a stable storage
 curr_term = 0               # The server's current Term
 voted_for = None            # The server id that this server voted for this term
 
 
 class Heartbeat(Thread):
-    # The heartbeat daemon thread subclass; Several will be summoned by a new leader, and killed if the owner stepped down
-    # If the target's log is consistent with the leader's send empty heartbeat periodically Else, begin converting the log
-    # into the leader's one by one (especially when a new record is appended, every other node will be inconsistent)
+    # The heartbeat daemon thread subclass; Will be summoned by a new leader, and killed if the owner stepped down
+    # If a target's log is consistent with the leader's send empty heartbeat periodically Else, begin converting the
+    # log into the leader's one by one (especially when a new record is appended, every other node will be inconsistent)
     # This way, the contains of load_log will automatically be broadcasted at any point
 
-    def __init__(self, target_id):
-        self.target_url = balancerhost[target_id]
+    def __init__(self):
+
+        self.next_idx = []
+        for i in range(balancerhost.__len__()-1):
+            self.next_idx.append(load_log.get_size() + 1)
+
         Thread.__init__(self)
 
-    def do_append_entry(self, **kwargs):
-        # Do an append entry RPC to self.target_url
+    def do_append_entry(self, balancer_id, **kwargs):
+        # Do an append entry RPC to the supplied balancer host id
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, worker_id, worker_load, commit_idx
-        # Return the results of 'success' and 'term' in form of dictionary
-        # TODO: Implement this method
-        return {
-            'success' : False,
-            'term' : 0
-        }
+        # Return the results of 'success' and 'term' in form of dictionary. Or None if something bad happens
+
+        try:
+            r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = 0.1)
+            result = json.loads(r.json())
+        except Exception as e:
+            if verbose:
+                print(e)
+            result = None
+
+        return result
 
     def run(self):
         # An infinite loop of spamming the target with append entry RPC if not consistent with leader
         # Or periodically send heartbeat if the target is consistent
         # The moment curr_term is changed, will terminate automatically
+        # TODO: Currently, each request is blocking, making the system un-scalable. Fix this. Later.
 
-        next_index = load_log.get_size()
+        global curr_term, state
         this_term = curr_term
 
+        # While the term is still the same, with delay in between
         while this_term == curr_term:
-            prev_log = load_log.get_log(next_index-1)
-            next_log = load_log.get_log(next_index)
+            sleep(append_delay)
 
-            res = self.do_append_entry(**{
-                'leader_term' : curr_term,
-                'leader_id' : id,
-                'prev_log_idx' : prev_log.log_id,
-                'prev_log_term' : prev_log.log_term,
-                'worker_id' : None if (next_log is None) else next_log.worker_id,
-                'worker_load' : None if (next_log is None) else next_log.worker_load,
-                'commit_idx' : load_log.get_last_commited_id()
-            })
+            # For every other host other than this one,
+            for i in range(balancerhost.__len__()-1):
+                if i == server_id:
+                    continue
 
-            if res.success:
-                if not (next_log is None):
-                    next_index += 1
+                prev_log = load_log.get_log(self.next_idx[i]-1)
+
+                # Prepare all the necessary new log
+                new_log = []
+                for i in range(self.next_idx[i], load_log.get_size()):
+                    next_log = load_log.get_log(i)
+                    new_log.append({'worker_id' : next_log.worker_id, 'worker_load' : next_log.worker_load})
+
+                # Send the apropriate RPC according to the host log state
+                res = self.do_append_entry( i, **{
+                    'leader_term' : curr_term,
+                    'leader_id' : server_id,
+                    'prev_log_idx' : prev_log.log_id,
+                    'prev_log_term' : prev_log.log_term,
+                    'new_log' : new_log,
+                    'commit_idx' : load_log.get_last_commited_id()
+                })
+
+                # If an error occur during RPC, continue on
+                if res is None:
+                    continue
+
+                # If a host has a higher term, step down
+                if res.term > curr_term:
+                    curr_term = res.term
+                    state = 0
+                    break
+
+                # Else, modify the next index accordingly
+                if res.success:
+                    self.next_idx[i] += new_log.__len__()
+                    # TODO: Keep track of how many nodes has commit each log entry, so that.. you know.. stuffs
                 else:
-                    sleep(append_delay)
-            else:
-                next_index -= 1
+                    self.next_idx[i] -= 1
 
 
-class WorkerHandler(BaseHTTPRequestHandler):
+class BalancerHandler(BaseHTTPRequestHandler):
     # The main load balancer server class
 
     def handle_request_vote(self, **kwargs):
@@ -158,9 +123,45 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
     def handle_append_entry(self, **kwargs):
         # Handle append entry RPC
-        # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, worker_id, worker_load, commit_idx
-        # TODO: Implement this method
-        pass
+        # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, log, commit_idx
+
+        global curr_term, state
+
+        # If the sender term is lower, return the correct term
+        if kwargs.leader_term < curr_term:
+            res = { 'success' : False, 'term' : curr_term }
+        else:
+
+            # Replace the current term, if the sender's is higher
+            if kwargs.leader_term > curr_term:
+                curr_term = kwargs.leader_term
+
+            # TODO: If candidate or leader, step down here
+            # TODO: Reset election timer here
+
+            # Check the log consistency, return failed RPC if not consistent
+            prev_log = load_log.get_log(kwargs.prev_log_idx)
+            if prev_log is None:
+                res = { 'success': False, 'term': curr_term }
+            else:
+                if prev_log.log_term != kwargs.prev_log_term:
+                    res = {'success': False, 'term': curr_term}
+                else:
+
+                    # Check if the RPC contains new log to record, and append it if exist
+                    for item in kwargs.log:
+                        load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
+
+                    # Commit all the committed log
+                    for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
+                        if not load_log.is_commited(i):
+                            load_log.commit_log(i,worker_load)
+
+                    res = {'success': True, 'term': curr_term}
+
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(str(json.loads(res)).encode('utf-8'))
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
@@ -169,7 +170,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Should be clear enough
-        # TODO: Implement this method
+        # TODO: Implement the url parser, and make the url pattern for the above RPC
         pass
 
 
@@ -199,17 +200,17 @@ def load_conf():
 def get_port():
     # Get the desired port and the server ID from the conf
 
-    global id
+    global server_id
     print("There seems to be " +balancerhost.__len__().__str__()+ " balancer hosts in the system:")
     for host in balancerhost:
-        print(id.__str__() +". "+ host.__str__())
-        id += 1
+        print(server_id.__str__() +". "+ host.__str__())
+        server_id += 1
 
     try:
-        id = int(input("Which one am I supposed to be? "))
-        start = balancerhost[id-1].find(":", 8)
-        end = balancerhost[id-1].find("/", start)
-        return int(balancerhost[id-1][start+1:end])
+        server_id = int(input("Which one am I supposed to be? ")) - 1
+        start = balancerhost[server_id].find(":", 8)
+        end = balancerhost[server_id].find("/", start)
+        return int(balancerhost[server_id][start+1:end])
     except:
         print("Error in parsing port number")
         exit()
@@ -221,6 +222,8 @@ def main():
     # Get the desired port and prepare the server
     current_port = get_port()
     print(current_port)
+
+    # TODO: Implement this method so that the program can actually start
 
 
 if __name__ == "__main__": main()

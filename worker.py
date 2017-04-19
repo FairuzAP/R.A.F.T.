@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler
 from time import sleep
 from os import getpid
 from threading import Thread
-from requests import get
+from requests import get, post
 from sys import exit
 import psutil
 
@@ -13,14 +13,16 @@ import psutil
 # Global Variable definition
 workerhost = []
 balancerhost = []
+server_id = 1
 daemon_delay = 0.5
 pid = getpid()
-verbose = True
-id = 1
+verbose = False
 
 
 def load_conf():
     # Method to load the conf.txt file, and write to workerhost and balancerhost
+
+    global workerhost, balancerhost
 
     # Try opening the config file
     try:
@@ -45,17 +47,18 @@ def load_conf():
 def get_port():
     # Get the desired port and the server ID from the conf
 
-    global id
+    global server_id
+
     print("There seems to be " +workerhost.__len__().__str__()+ " worker hosts in the system:")
     for host in workerhost:
-        print(id.__str__() +". "+ host.__str__())
-        id += 1
+        print(server_id.__str__() + ". " + host.__str__())
+        server_id += 1
 
     try:
-        id = int(input("Which one am I supposed to be? ")) - 1
-        start = workerhost[id].find(":", 8)
-        end = workerhost[id].find("/", start)
-        return int(workerhost[id][start+1:end])
+        server_id = int(input("Which one am I supposed to be? ")) - 1
+        start = workerhost[server_id].find(":", 8)
+        end = workerhost[server_id].find("/", start)
+        return int(workerhost[server_id][start + 1:end])
     except:
         print("Error in parsing port number")
         exit()
@@ -145,7 +148,7 @@ def main():
     except:
         print("Error in starting worker server")
         exit()
-    print("Worker Server " +id.__str__()+ " Running at port " + current_port.__str__())
+    print("Worker Server " + server_id.__str__() + " Running at port " + current_port.__str__())
 
     # Start the server daemon and the server
     worker_daemon = Thread(target=worker_daemon_method)
