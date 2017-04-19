@@ -19,6 +19,65 @@ verbose = True
 id = 1
 
 
+# Method to load the conf.txt file, and write to workerhost and balancerhost
+def load_conf():
+    # Try opening the config file
+    try:
+        conf = open("conf.txt","r",1)
+    except IOError:
+        print("Error, conf.txt file not found")
+        exit()
+
+    # Set the worker and loadbalancer host list
+    workercount = int(conf.__next__())
+    for index in range(workercount):
+        workerhost.append(conf.__next__().rstrip())
+    balancercount = int(conf.__next__())
+    for index in range(balancercount):
+        balancerhost.append(conf.__next__().rstrip())
+
+    # Close the config file
+    conf.close()
+    print("Config file loaded successfully")
+
+
+# Get the desired port and the server ID from the conf
+def get_port():
+    global id
+    print("There seems to be " +workerhost.__len__().__str__()+ " worker hosts in the system:")
+    for host in workerhost:
+        print(id.__str__() +". "+ host.__str__())
+        id += 1
+
+    try:
+        id = int(input("Which one am I supposed to be? ")) - 1
+        start = workerhost[id].find(":", 8)
+        end = workerhost[id].find("/", start)
+        return int(workerhost[id][start+1:end])
+    except:
+        print("Error in parsing port number")
+        exit()
+
+
+# Get the current main thread workload
+def get_workload():
+    return psutil.Process(pid).cpu_percent(interval=daemon_delay)
+
+
+# Periodically broadcast workload to all balancerhost
+def worker_daemon_method():
+    while(True):
+        current_workload = get_workload().__str__()
+        if verbose:
+            print("Broadcasting current workload of " + current_workload)
+
+        for url in balancerhost:
+            t = SendWorkload(url + "load/" + current_workload, 0.01)
+            t.start()
+
+        sleep(daemon_delay)
+
+
 # The main worker server class
 class WorkerHandler(BaseHTTPRequestHandler):
 
@@ -67,65 +126,6 @@ class SendWorkload(Thread):
             if verbose:
                 print("Workload broadcast failed for " + self.url)
         return
-
-
-# Method to load the conf.txt file, and write to workerhost and balancerhost
-def load_conf():
-    # Try opening the config file
-    try:
-        conf = open("conf.txt","r",1)
-    except IOError:
-        print("Error, conf.txt file not found")
-        exit()
-
-    # Set the worker and loadbalancer host list
-    workercount = int(conf.__next__())
-    for index in range(workercount):
-        workerhost.append(conf.__next__().rstrip())
-    balancercount = int(conf.__next__())
-    for index in range(balancercount):
-        balancerhost.append(conf.__next__().rstrip())
-
-    # Close the config file
-    conf.close()
-    print("Config file loaded successfully")
-
-
-# Get the desired port and the server ID from the conf
-def get_port():
-    global id
-    print("There seems to be " +workerhost.__len__().__str__()+ " worker hosts in the system:")
-    for host in workerhost:
-        print(id.__str__() +". "+ host.__str__())
-        id += 1
-
-    try:
-        id = int(input("Which one am I supposed to be? "))
-        start = workerhost[id-1].find(":", 8)
-        end = workerhost[id-1].find("/", start)
-        return int(workerhost[id-1][start+1:end])
-    except:
-        print("Error in parsing port number")
-        exit()
-
-
-# Get the current main thread workload
-def get_workload():
-    return psutil.Process(pid).cpu_percent(interval=daemon_delay)
-
-
-# Periodically broadcast workload to all balancerhost
-def worker_daemon_method():
-    while(True):
-        current_workload = get_workload().__str__()
-        if verbose:
-            print("Broadcasting current workload of " + current_workload)
-
-        for url in balancerhost:
-            t = SendWorkload(url + "load/" + current_workload, 0.01)
-            t.start()
-
-        sleep(daemon_delay)
 
 
 def main():
