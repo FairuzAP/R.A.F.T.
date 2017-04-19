@@ -15,8 +15,8 @@ workerhost = []
 balancerhost = []
 daemon_delay = 0.5
 pid = getpid()
+verbose = False
 id = 1
-
 
 # The main worker server class
 class WorkerHandler(BaseHTTPRequestHandler):
@@ -50,6 +50,22 @@ class WorkerHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.end_headers()
             print(ex)
+
+
+# Thread class that will be used to send
+class SendWorkload(threading.Thread):
+    def __init__(self, url, timeout):
+        threading.Thread.__init__(self)
+        self.url = url
+        self.timeout = timeout
+
+    def run(self):
+        try:
+            requests.get(self.url, timeout = self.timeout)
+        except Exception as e:
+            if verbose:
+                print("Workload broadcast failed for " + self.url)
+        return
 
 
 # Method to load the conf.txt file, and write to workerhost and balancerhost
@@ -101,14 +117,12 @@ def get_workload():
 def worker_daemon_method():
     while(True):
         current_workload = get_workload().__str__()
-        print("Broadcasting current workload of " + current_workload)
+        if verbose:
+            print("Broadcasting current workload of " + current_workload)
 
         for url in balancerhost:
-            try:
-                requests.get(url + "load/" + current_workload, timeout=0.001)
-            except Exception as e:
-                print("Workload broadcast failed for " + url)
-                pass
+            t = SendWorkload(url + "load/" + current_workload, 0.01)
+            t.start()
 
         sleep(daemon_delay)
 
@@ -120,6 +134,8 @@ def main():
     current_port = get_port()
     try:
         worker = HTTPServer(("", current_port), WorkerHandler)
+        worker_thread = threading.Thread(target=worker.serve_forever)
+        worker_thread.daemon = True
     except:
         print("Error in starting worker server")
         sys.exit()
@@ -129,7 +145,9 @@ def main():
     worker_daemon = threading.Thread(target=worker_daemon_method)
     worker_daemon.daemon = True
     worker_daemon.start()
-    worker.serve_forever()
+    worker_thread.start()
+
+    input("\nPress anything to exit..\n\n")
 
 
 if __name__ == "__main__": main()
