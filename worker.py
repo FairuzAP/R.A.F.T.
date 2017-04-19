@@ -4,10 +4,10 @@ from http.server import HTTPServer
 from http.server import BaseHTTPRequestHandler
 from time import sleep
 from os import getpid
+from threading import Thread
+from requests import get
+from sys import exit
 import psutil
-import requests
-import sys
-import threading
 
 
 # Global Variable definition
@@ -15,8 +15,9 @@ workerhost = []
 balancerhost = []
 daemon_delay = 0.5
 pid = getpid()
-verbose = False
+verbose = True
 id = 1
+
 
 # The main worker server class
 class WorkerHandler(BaseHTTPRequestHandler):
@@ -53,15 +54,15 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
 
 # Thread class that will be used to send
-class SendWorkload(threading.Thread):
+class SendWorkload(Thread):
     def __init__(self, url, timeout):
-        threading.Thread.__init__(self)
+        Thread.__init__(self)
         self.url = url
         self.timeout = timeout
 
     def run(self):
         try:
-            requests.get(self.url, timeout = self.timeout)
+            get(self.url, timeout = self.timeout)
         except Exception as e:
             if verbose:
                 print("Workload broadcast failed for " + self.url)
@@ -75,7 +76,7 @@ def load_conf():
         conf = open("conf.txt","r",1)
     except IOError:
         print("Error, conf.txt file not found")
-        sys.exit()
+        exit()
 
     # Set the worker and loadbalancer host list
     workercount = int(conf.__next__())
@@ -105,7 +106,7 @@ def get_port():
         return int(workerhost[id-1][start+1:end])
     except:
         print("Error in parsing port number")
-        sys.exit()
+        exit()
 
 
 # Get the current main thread workload
@@ -134,15 +135,15 @@ def main():
     current_port = get_port()
     try:
         worker = HTTPServer(("", current_port), WorkerHandler)
-        worker_thread = threading.Thread(target=worker.serve_forever)
+        worker_thread = Thread(target=worker.serve_forever)
         worker_thread.daemon = True
     except:
         print("Error in starting worker server")
-        sys.exit()
+        exit()
     print("Worker Server " +id.__str__()+ " Running at port " + current_port.__str__())
 
     # Start the server daemon and the server
-    worker_daemon = threading.Thread(target=worker_daemon_method)
+    worker_daemon = Thread(target=worker_daemon_method)
     worker_daemon.daemon = True
     worker_daemon.start()
     worker_thread.start()
