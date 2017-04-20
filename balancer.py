@@ -37,10 +37,9 @@ class Heartbeat(Thread):
 
     def __init__(self):
 
-        self.next_idx = []
-        for i in range(balancerhost.__len__()-1):
-            self.next_idx.append(load_log.get_size() + 1)
-
+        self.node = []
+        for i in range(balancerhost.__len__()):
+            self.node.append({'next_idx' : load_log.get_size() + 1, 'last_commit' : None})
         Thread.__init__(self)
 
     def do_append_entry(self, balancer_id, **kwargs):
@@ -48,12 +47,12 @@ class Heartbeat(Thread):
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, worker_id, worker_load, commit_idx
         # Return the results of 'success' and 'term' in form of dictionary. Or None if something bad happens
 
+        if verbose: print("Sending append entry RPC to " + balancerhost[balancer_id])
         try:
             r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = 0.1)
             result = json.loads(r.json())
         except Exception as e:
-            if verbose:
-                print(e)
+            if verbose: print(e)
             result = None
 
         return result
@@ -64,7 +63,7 @@ class Heartbeat(Thread):
         # The moment curr_term is changed, will terminate automatically
         # TODO: Currently, each request is blocking, making the system un-scalable. Fix this. Later.
 
-        global curr_term, state
+        global curr_term, state, worker_load, load_log
         this_term = curr_term
 
         # While the term is still the same, with delay in between
@@ -72,44 +71,61 @@ class Heartbeat(Thread):
             sleep(append_delay)
 
             # For every other host other than this one,
-            for i in range(balancerhost.__len__()-1):
-                if i == server_id:
-                    continue
+            for i in range(balancerhost.__len__()):
+                if i == server_id: continue
 
-                prev_log = load_log.get_log(self.next_idx[i]-1)
+                try:
+                    prev_log = load_log.get_log(self.node[i].next_idx - 1)
 
-                # Prepare all the necessary new log
-                new_log = []
-                for i in range(self.next_idx[i], load_log.get_size()):
-                    next_log = load_log.get_log(i)
-                    new_log.append({'worker_id' : next_log.worker_id, 'worker_load' : next_log.worker_load})
+                    # Prepare all the necessary new log
+                    new_log = []
+                    for i in range(self.node[i].next_idx, load_log.get_size() + 1):
+                        next_log = load_log.get_log(i)
+                        new_log.append({'worker_id' : next_log.worker_id, 'worker_load' : next_log.worker_load})
 
-                # Send the apropriate RPC according to the host log state
-                res = self.do_append_entry( i, **{
-                    'leader_term' : curr_term,
-                    'leader_id' : server_id,
-                    'prev_log_idx' : prev_log.log_id,
-                    'prev_log_term' : prev_log.log_term,
-                    'new_log' : new_log,
-                    'commit_idx' : load_log.get_last_commited_id()
-                })
+                    # Send the apropriate RPC according to the host log state
+                    res = self.do_append_entry( i, **{
+                        'leader_term' : curr_term,
+                        'leader_id' : server_id,
+                        'prev_log_idx' : prev_log.log_id,
+                        'prev_log_term' : prev_log.log_term,
+                        'new_log' : new_log,
+                        'commit_idx' : load_log.get_last_commited_id()
+                    })
+
+                    # If a host has a higher term, step down
+                    if res.term > curr_term:
+                        curr_term = res.term
+                        state = 0
+                        break
+
+                    # Modify the next index accordingly
+                    if res.success:
+                        self.node[i].next_idx += new_log.__len__()
+                        self.node[i].last_commit = self.node[i].next_idx - 1
+                    else:
+                        self.node[i].next_idx -= 1
 
                 # If an error occur during RPC, continue on
-                if res is None:
+                except Exception as e:
+                    if verbose: print(e)
                     continue
 
-                # If a host has a higher term, step down
-                if res.term > curr_term:
-                    curr_term = res.term
-                    state = 0
+        # Keep track of how many node commit each uncommited log entry. Commit each log if possible
+        for nextcommit in range(load_log.get_last_commited_id(),load_log.get_size()):
+            commit = True
+
+            for node in self.node:
+                if node.last_commit is None:
+                    commit = False
+                    break
+                if node.last_commit <= nextcommit:
+                    commit = False
                     break
 
-                # Else, modify the next index accordingly
-                if res.success:
-                    self.next_idx[i] += new_log.__len__()
-                    # TODO: Keep track of how many nodes has commit each log entry, so that.. you know.. stuffs
-                else:
-                    self.next_idx[i] -= 1
+            if commit:
+                load_log.commit_log(nextcommit, worker_load)
+            else: break
 
 
 class BalancerHandler(BaseHTTPRequestHandler):
