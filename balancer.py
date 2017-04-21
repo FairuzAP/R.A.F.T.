@@ -3,30 +3,28 @@
 from http.server import HTTPServer
 from http.server import BaseHTTPRequestHandler
 from time import sleep
-from os import getpid
 from threading import Thread
 from requests import get
 from sys import exit
-from storage import workerLoad, loadLog
+from storage import workerLoad, loadLog, raftState
 import json
 
+
+# Timer constant definition
+HEARTBEAT_DELAY = 0.1
+RPC_TIMEOUT = 0.5
 
 # Global Variable definition
 workerhost = []
 balancerhost = []
-append_delay = 0.1
 verbose = True
 server_id = 1
-
 
 # Global variables containing server critical information
 worker_load = workerLoad()  # The global worker load storage interface
 load_log = loadLog()        # The global RAFT log storage interface
+raft_state = raftState()    # The server's current term and voted_for information
 state = 0                   # The state of the server, 0=Follower, 1=Candidate, 2=Leader
-leader_heart = None         # Will contains the handler to heartbeat thread if the state is the leader
-# TODO: Move the variables below into being stored in a stable storage
-curr_term = 0               # The server's current Term
-voted_for = None            # The server id that this server voted for this term
 
 
 class Heartbeat(Thread):
@@ -36,7 +34,6 @@ class Heartbeat(Thread):
     # This way, the contains of load_log will automatically be broadcasted at any point
 
     def __init__(self):
-
         self.node = []
         for i in range(balancerhost.__len__()):
             self.node.append({'next_idx' : load_log.get_size() + 1, 'last_commit' : None})
@@ -49,7 +46,7 @@ class Heartbeat(Thread):
 
         if verbose: print("Sending append entry RPC to " + balancerhost[balancer_id])
         try:
-            r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = 0.1)
+            r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
             result = json.loads(r.json())
         except Exception as e:
             if verbose: print(e)
@@ -63,12 +60,12 @@ class Heartbeat(Thread):
         # The moment curr_term is changed, will terminate automatically
         # TODO: Currently, each request is blocking, making the system un-scalable. Fix this. Later.
 
-        global curr_term, state, worker_load, load_log
-        this_term = curr_term
+        global raft_state, state, worker_load, load_log
+        this_term = raft_state.get_term()
 
         # While the term is still the same, with delay in between
-        while this_term == curr_term:
-            sleep(append_delay)
+        while this_term == raft_state.get_term():
+            sleep(HEARTBEAT_DELAY)
 
             # For every other host other than this one,
             for i in range(balancerhost.__len__()):
@@ -85,7 +82,7 @@ class Heartbeat(Thread):
 
                     # Send the apropriate RPC according to the host log state
                     res = self.do_append_entry( i, **{
-                        'leader_term' : curr_term,
+                        'leader_term' : raft_state.get_term(),
                         'leader_id' : server_id,
                         'prev_log_idx' : prev_log.log_id,
                         'prev_log_term' : prev_log.log_term,
@@ -94,8 +91,8 @@ class Heartbeat(Thread):
                     })
 
                     # If a host has a higher term, step down
-                    if res.term > curr_term:
-                        curr_term = res.term
+                    if res.term > raft_state.get_term():
+                        raft_state.set_term(res.term)
                         state = 0
                         break
 
@@ -141,48 +138,89 @@ class BalancerHandler(BaseHTTPRequestHandler):
         # Handle append entry RPC
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, log, commit_idx
 
-        global curr_term, state
+        global raft_state, state
 
-        # If the sender term is lower, return the correct term
-        if kwargs.leader_term < curr_term:
-            res = { 'success' : False, 'term' : curr_term }
-        else:
-
-            # Replace the current term, if the sender's is higher
-            if kwargs.leader_term > curr_term:
-                curr_term = kwargs.leader_term
-
-            # TODO: If candidate or leader, step down here
-            # TODO: Reset election timer here
-
-            # Check the log consistency, return failed RPC if not consistent
-            prev_log = load_log.get_log(kwargs.prev_log_idx)
-            if prev_log is None:
-                res = { 'success': False, 'term': curr_term }
+        try:
+            # If the sender term is lower, return the correct term
+            if kwargs.leader_term < raft_state.get_term():
+                res = { 'success' : False, 'term' : raft_state.get_term() }
             else:
-                if prev_log.log_term != kwargs.prev_log_term:
-                    res = {'success': False, 'term': curr_term}
+
+                # Replace the current term, if the sender's is higher
+                if kwargs.leader_term > raft_state.get_term():
+                    raft_state.set_term(kwargs.leader_term)
+
+                # TODO: If candidate or leader, step down here
+                # TODO: Reset election timer here
+
+                # Check the log consistency, return failed RPC if not consistent
+                prev_log = load_log.get_log(kwargs.prev_log_idx)
+                if prev_log is None:
+                    res = { 'success': False, 'term': raft_state.get_term() }
                 else:
+                    if prev_log.log_term != kwargs.prev_log_term:
+                        res = {'success': False, 'term': raft_state.get_term()}
+                    else:
 
-                    # Check if the RPC contains new log to record, and append it if exist
-                    for item in kwargs.log:
-                        load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
+                        # Check if the RPC contains new log to record, and append it if exist
+                        for item in kwargs.log:
+                            load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
 
-                    # Commit all the committed log
-                    for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
-                        if not load_log.is_commited(i):
-                            load_log.commit_log(i,worker_load)
+                        # Commit all the committed log
+                        for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
+                            if not load_log.is_commited(i):
+                                load_log.commit_log(i,worker_load)
 
-                    res = {'success': True, 'term': curr_term}
+                        res = {'success': True, 'term': raft_state.get_term()}
 
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(str(json.loads(res)).encode('utf-8'))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(str(json.loads(res)).encode('utf-8'))
+
+        # Return error if anything went wrong
+        except Exception as e:
+            if verbose: print(e)
+            self.send_response(500)
+            self.end_headers()
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
-        # TODO: Implement this method
-        pass
+
+        global worker_load
+        try:
+            worker_id = worker_load.get_idle_worker()
+            url = workerhost[worker_id] + number.__str__()
+            r = get(url, timeout=RPC_TIMEOUT)
+
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(str(r.text).encode('utf-8'))
+
+        except Exception as e:
+            if verbose: print(e)
+            self.send_response(500)
+            self.end_headers()
+
+    def handle_update_workload(self, work_id, load):
+        # Handle workload broadcast from the worker nodes
+
+        global load_log, worker_load, raft_state, state
+        try:
+            # Return if not the current leader
+            if state == 2:
+
+                # Check if the difference is significant
+                old_load = worker_load.get_load(work_id)
+                if abs(old_load - load) > 5:
+                    load_log.append_log(raft_state.get_term(), work_id, load)
+
+            self.send_response(200)
+            self.end_headers()
+
+        except Exception as e:
+            if verbose: print(e)
+            self.send_response(500)
+            self.end_headers()
 
     def do_GET(self):
         # Should be clear enough

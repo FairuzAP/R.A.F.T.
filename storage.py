@@ -15,6 +15,10 @@ class workerLoad():
         # Set the load of the appropriate worker, Load of -1 means the node is down for now
         pass
 
+    def get_load(self, id):
+        # Return the current load of the worker with the supplied id
+        pass
+
     def get_idle_worker(self):
         # Return the id of the most idle worker host
         pass
@@ -68,3 +72,21 @@ class loadLog():
 
     def get_last_commited_id(self):
         pass
+
+
+class raftState():
+    # Stable storage interface for storing server's term and voted_for information
+    # TODO: Implement this class
+
+    def get_term(self):
+        pass
+
+    def get_voted_for(self):
+        pass
+
+    def set_term(self, term):
+        pass
+
+    def set_voted_for(self, vote):
+        pass
+
