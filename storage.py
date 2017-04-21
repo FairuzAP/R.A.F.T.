@@ -12,7 +12,7 @@ class workerLoad():
         pass
 
     def set_load(self, id, load):
-        # Set the load of the appropriate worker, Load of -1 means the node is down for now
+        # Set the load of the appropriate worker, Load of 1000 means the node is down for now
         pass
 
     def get_load(self, id):

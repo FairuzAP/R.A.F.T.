@@ -13,6 +13,7 @@ import json
 # Timer constant definition
 HEARTBEAT_DELAY = 0.1
 RPC_TIMEOUT = 0.5
+WORKER_TIMEOUT = 2
 
 # Global Variable definition
 workerhost = []
@@ -26,7 +27,7 @@ load_log = loadLog()        # The global RAFT log storage interface
 raft_state = raftState()    # The server's current term and voted_for information
 state = 0                   # The state of the server, 0=Follower, 1=Candidate, 2=Leader
 
-
+worker_counter = []         # The state of all worker, used by worker_timeout
 class Heartbeat(Thread):
     # The heartbeat daemon thread subclass; Will be summoned by a new leader, and killed if the owner stepped down
     # If a target's log is consistent with the leader's send empty heartbeat periodically Else, begin converting the
@@ -34,10 +35,44 @@ class Heartbeat(Thread):
     # This way, the contains of load_log will automatically be broadcasted at any point
 
     def __init__(self):
+
+        global worker_counter
+        worker_counter = []
         self.node = []
+
+        # Initate the balancer node array, and the worker_counter
         for i in range(balancerhost.__len__()):
             self.node.append({'next_idx' : load_log.get_size() + 1, 'last_commit' : None})
+            worker_counter.append(False)
+
+        # Start the timeout thread, and it's own thread
+        self.timeout = Thread(target=self.worker_timeout)
+        self.timeout.daemon = True
+        self.timeout.start()
         Thread.__init__(self)
+
+    def worker_timeout(self):
+        # Will be initiated in form of thread at the init of Heartbeat daemon
+        # Periodically check the state of global worker_counter; if the update_workload RPC hasn't set a worker state
+        # to True of a particular worker during the timeout period (and the worker is still considered up), append log
+        # to add information that the worker is considered down right now
+
+        global raft_state, load_log, worker_load, worker_counter
+        this_term = raft_state.get_term()
+        sleep(WORKER_TIMEOUT)
+
+        # While the term is still the same, with delay in between
+        while this_term == raft_state.get_term():
+
+            # Check if all worker had contacted the load balancer between the timeout,
+            # If not, then the worker is presumed dead
+            for i in range(balancerhost.__len__()):
+                if not worker_counter[i]:
+                    if worker_load.get_load(i) < 1000:
+                        load_log.append_log(raft_state.get_term(), i, 1000)
+                worker_counter[i] = False
+
+            sleep(WORKER_TIMEOUT)
 
     def do_append_entry(self, balancer_id, **kwargs):
         # Do an append entry RPC to the supplied balancer host id
@@ -65,7 +100,6 @@ class Heartbeat(Thread):
 
         # While the term is still the same, with delay in between
         while this_term == raft_state.get_term():
-            sleep(HEARTBEAT_DELAY)
 
             # For every other host other than this one,
             for i in range(balancerhost.__len__()):
@@ -108,21 +142,23 @@ class Heartbeat(Thread):
                     if verbose: print(e)
                     continue
 
-        # Keep track of how many node commit each uncommited log entry. Commit each log if possible
-        for nextcommit in range(load_log.get_last_commited_id(),load_log.get_size()):
-            commit = True
+            # Keep track of how many node commit each uncommited log entry. Commit each log if possible
+            for nextcommit in range(load_log.get_last_commited_id(),load_log.get_size()):
+                commit = True
 
-            for node in self.node:
-                if node.last_commit is None:
-                    commit = False
-                    break
-                if node.last_commit <= nextcommit:
-                    commit = False
-                    break
+                for node in self.node:
+                    if node.last_commit is None:
+                        commit = False
+                        break
+                    if node.last_commit <= nextcommit:
+                        commit = False
+                        break
 
-            if commit:
-                load_log.commit_log(nextcommit, worker_load)
-            else: break
+                if commit:
+                    load_log.commit_log(nextcommit, worker_load)
+                else: break
+
+            sleep(HEARTBEAT_DELAY)
 
 
 class BalancerHandler(BaseHTTPRequestHandler):
@@ -140,92 +176,98 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
         global raft_state, state
 
-        try:
-            # If the sender term is lower, return the correct term
-            if kwargs.leader_term < raft_state.get_term():
-                res = { 'success' : False, 'term' : raft_state.get_term() }
+        # If the sender term is lower, return the correct term
+        if kwargs.leader_term < raft_state.get_term():
+            res = { 'success' : False, 'term' : raft_state.get_term() }
+        else:
+
+            # Replace the current term, if the sender's is higher
+            if kwargs.leader_term > raft_state.get_term():
+                raft_state.set_term(kwargs.leader_term)
+
+            # TODO: If candidate or leader, step down here
+            # TODO: Reset election timer here
+
+            # Check the log consistency, return failed RPC if not consistent
+            prev_log = load_log.get_log(kwargs.prev_log_idx)
+            if prev_log is None:
+                res = { 'success': False, 'term': raft_state.get_term() }
             else:
-
-                # Replace the current term, if the sender's is higher
-                if kwargs.leader_term > raft_state.get_term():
-                    raft_state.set_term(kwargs.leader_term)
-
-                # TODO: If candidate or leader, step down here
-                # TODO: Reset election timer here
-
-                # Check the log consistency, return failed RPC if not consistent
-                prev_log = load_log.get_log(kwargs.prev_log_idx)
-                if prev_log is None:
-                    res = { 'success': False, 'term': raft_state.get_term() }
+                if prev_log.log_term != kwargs.prev_log_term:
+                    res = {'success': False, 'term': raft_state.get_term()}
                 else:
-                    if prev_log.log_term != kwargs.prev_log_term:
-                        res = {'success': False, 'term': raft_state.get_term()}
-                    else:
 
-                        # Check if the RPC contains new log to record, and append it if exist
-                        for item in kwargs.log:
-                            load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
+                    # Check if the RPC contains new log to record, and append it if exist
+                    for item in kwargs.log:
+                        load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
 
-                        # Commit all the committed log
-                        for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
-                            if not load_log.is_commited(i):
-                                load_log.commit_log(i,worker_load)
+                    # Commit all the committed log
+                    for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
+                        if not load_log.is_commited(i):
+                            load_log.commit_log(i,worker_load)
 
-                        res = {'success': True, 'term': raft_state.get_term()}
+                    res = {'success': True, 'term': raft_state.get_term()}
 
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(str(json.loads(res)).encode('utf-8'))
-
-        # Return error if anything went wrong
-        except Exception as e:
-            if verbose: print(e)
-            self.send_response(500)
-            self.end_headers()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(str(json.loads(res)).encode('utf-8'))
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
 
         global worker_load
-        try:
-            worker_id = worker_load.get_idle_worker()
-            url = workerhost[worker_id] + number.__str__()
-            r = get(url, timeout=RPC_TIMEOUT)
 
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(str(r.text).encode('utf-8'))
+        worker_id = worker_load.get_idle_worker()
+        url = workerhost[worker_id] + number.__str__()
+        r = get(url, timeout=RPC_TIMEOUT)
 
-        except Exception as e:
-            if verbose: print(e)
-            self.send_response(500)
-            self.end_headers()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(str(r.text).encode('utf-8'))
 
     def handle_update_workload(self, work_id, load):
         # Handle workload broadcast from the worker nodes
 
         global load_log, worker_load, raft_state, state
+
+        # Return if not the current leader
+        if state == 2:
+
+            global worker_counter
+            worker_counter[work_id] = True
+
+            # Check if the difference is significant
+            old_load = worker_load.get_load(work_id)
+            if abs(old_load - load) > 5:
+                load_log.append_log(raft_state.get_term(), work_id, load)
+
+        self.send_response(200)
+        self.end_headers()
+
+    def do_GET(self):
+        # Should be clear enough
+
         try:
-            # Return if not the current leader
-            if state == 2:
+            args = self.path.split('/')
 
-                # Check if the difference is significant
-                old_load = worker_load.get_load(work_id)
-                if abs(old_load - load) > 5:
-                    load_log.append_log(raft_state.get_term(), work_id, load)
+            if args[1] == 'append':
+                dict = json.loads(args[2])
+                self.handle_append_entry(**dict)
 
-            self.send_response(200)
-            self.end_headers()
+            elif args[1] == 'load':
+                dict = json.loads(args[2])
+                self.handle_update_workload(dict.worker_id, dict.worker_load)
+
+            elif args[1] == 'vote':
+                dict = json.loads(args[2])
+                self.handle_request_vote(**dict)
+
+            else: self.handle_worker_request(int(args[1]))
 
         except Exception as e:
             if verbose: print(e)
             self.send_response(500)
             self.end_headers()
-
-    def do_GET(self):
-        # Should be clear enough
-        # TODO: Implement the url parser, and make the url pattern for the above RPC
-        pass
 
 
 def load_conf():

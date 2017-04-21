@@ -8,6 +8,7 @@ from threading import Thread
 from requests import get, post
 from sys import exit
 import psutil
+import json
 
 
 # Global Variable definition
@@ -16,7 +17,7 @@ balancerhost = []
 server_id = 1
 daemon_delay = 0.5
 pid = getpid()
-verbose = False
+verbose = True
 
 
 def load_conf():
@@ -79,7 +80,11 @@ def worker_daemon_method():
             print("Broadcasting current workload of " + current_workload)
 
         for url in balancerhost:
-            t = SendWorkload(url + "load/" + current_workload, 0.01)
+            load = {
+                'worker_id' : server_id,
+                'worker_load' : current_workload,
+            }
+            t = SendWorkload(url + "load/" + json.dumps(load), 0.01)
             t.start()
 
         sleep(daemon_delay)
