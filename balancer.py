@@ -7,13 +7,15 @@ from threading import Thread
 from requests import get
 from sys import exit
 from storage import workerLoad, loadLog, raftState
+from random import seed, uniform
 import json
 
 
 # Timer constant definition
 HEARTBEAT_DELAY = 0.1
 RPC_TIMEOUT = 0.5
-WORKER_TIMEOUT = 2
+WORKER_TIMEOUT = 2.0
+ELECTION_TIMEOUT = 2.0
 
 # Global Variable definition
 workerhost = []
@@ -26,6 +28,39 @@ worker_load = workerLoad()  # The global worker load storage interface
 load_log = loadLog()        # The global RAFT log storage interface
 raft_state = raftState()    # The server's current term and voted_for information
 state = 0                   # The state of the server, 0=Follower, 1=Candidate, 2=Leader
+
+
+timeout_counter = True      # Wether or not the server had received words from leader since the last ELECTION_TIMEOUT
+class TimeoutChecker(Thread):
+    # Thread subclass that will handle the election timeout if the server's current state is NOT a leader.
+    # Periodically will check the timeout_counter value and set it to False. The server's RPC will set the
+    # timeout_counter back to True when receiving append_entries RPC.
+    # If during the second check the timeout_counter value is still false, meaning that the leader haven't
+    # contacted the server in a while. So the server will become a candidate
+    # TODO: Not exactly the standard way to do election timeout, better to use event-thingy
+
+    def __init__(self):
+        global timeout_counter
+        timeout_counter = True
+        seed()
+        Thread.__init__(self)
+
+    def start_new_term(self):
+        # Upgrade the current server to a candidate state,
+        pass
+
+    def run(self):
+        global timeout_counter
+        while True:
+
+            # Randomize (to some extent) the election timeout
+            next_timeout = ELECTION_TIMEOUT + uniform(-0.5,0.5)
+            sleep(next_timeout)
+
+            if state == 2: break
+            if not timeout_counter: self.start_new_term()
+            timeout_counter = False
+
 
 worker_counter = []         # The state of all worker, used by worker_timeout
 class Heartbeat(Thread):
@@ -89,11 +124,62 @@ class Heartbeat(Thread):
 
         return result
 
+    def send_heartbeat(self, i):
+        # Send a heartbeat to balancer node with id i, the content of the heartbeat is according to the next_idx
+        # value of this node. Will also update the next_idx according to the res id the returned term is still
+        # Consistent with the state of this server
+
+        global raft_state, load_log
+        prev_log = load_log.get_log(self.node[i].next_idx - 1)
+
+        # Prepare all the necessary new log
+        new_log = []
+        for i in range(self.node[i].next_idx, load_log.get_size() + 1):
+            next_log = load_log.get_log(i)
+            new_log.append({'worker_id': next_log.worker_id, 'worker_load': next_log.worker_load})
+
+        # Send the apropriate RPC according to the host log state
+        res = self.do_append_entry(i, **{
+            'leader_term': raft_state.get_term(),
+            'leader_id': server_id,
+            'prev_log_idx': prev_log.log_id,
+            'prev_log_term': prev_log.log_term,
+            'new_log': new_log,
+            'commit_idx': load_log.get_last_commited_id()
+        })
+
+        # Modify the next index accordingly
+        if res.success and (res.term <= raft_state.get_term()):
+            self.node[i].next_idx += new_log.__len__()
+            self.node[i].last_commit = self.node[i].next_idx - 1
+        else:
+            self.node[i].next_idx -= 1
+        return res
+
+    def update_log_commit(self):
+        # Keep track of how many node commit each uncommited log entry. Commit each log if possible
+        global worker_load, load_log
+        for nextcommit in range(load_log.get_last_commited_id(), load_log.get_size()):
+            commit = True
+
+            for node in self.node:
+                if node.last_commit is None:
+                    commit = False
+                    break
+                if node.last_commit <= nextcommit:
+                    commit = False
+                    break
+
+            if commit:
+                load_log.commit_log(nextcommit, worker_load)
+            else:
+                break
+
     def run(self):
         # An infinite loop of spamming the target with append entry RPC if not consistent with leader
         # Or periodically send heartbeat if the target is consistent
         # The moment curr_term is changed, will terminate automatically
-        # TODO: Currently, each request is blocking, making the system un-scalable. Fix this. Later.
+        # TODO: Currently, each request is blocking, making the system relatively un-scalable. Fix this. Later.
 
         global raft_state, state, worker_load, load_log
         this_term = raft_state.get_term()
@@ -106,58 +192,24 @@ class Heartbeat(Thread):
                 if i == server_id: continue
 
                 try:
-                    prev_log = load_log.get_log(self.node[i].next_idx - 1)
+                    # Send the heartbeat to this host
+                    res = self.send_heartbeat(i)
 
-                    # Prepare all the necessary new log
-                    new_log = []
-                    for i in range(self.node[i].next_idx, load_log.get_size() + 1):
-                        next_log = load_log.get_log(i)
-                        new_log.append({'worker_id' : next_log.worker_id, 'worker_load' : next_log.worker_load})
-
-                    # Send the apropriate RPC according to the host log state
-                    res = self.do_append_entry( i, **{
-                        'leader_term' : raft_state.get_term(),
-                        'leader_id' : server_id,
-                        'prev_log_idx' : prev_log.log_id,
-                        'prev_log_term' : prev_log.log_term,
-                        'new_log' : new_log,
-                        'commit_idx' : load_log.get_last_commited_id()
-                    })
-
-                    # If a host has a higher term, step down
+                    # If a host has a higher term, step down (not forgetting the election timeout)
                     if res.term > raft_state.get_term():
                         raft_state.set_term(res.term)
                         state = 0
+                        timer = TimeoutChecker()
+                        timer.daemon = True
+                        timer.start()
                         break
-
-                    # Modify the next index accordingly
-                    if res.success:
-                        self.node[i].next_idx += new_log.__len__()
-                        self.node[i].last_commit = self.node[i].next_idx - 1
-                    else:
-                        self.node[i].next_idx -= 1
 
                 # If an error occur during RPC, continue on
                 except Exception as e:
                     if verbose: print(e)
                     continue
 
-            # Keep track of how many node commit each uncommited log entry. Commit each log if possible
-            for nextcommit in range(load_log.get_last_commited_id(),load_log.get_size()):
-                commit = True
-
-                for node in self.node:
-                    if node.last_commit is None:
-                        commit = False
-                        break
-                    if node.last_commit <= nextcommit:
-                        commit = False
-                        break
-
-                if commit:
-                    load_log.commit_log(nextcommit, worker_load)
-                else: break
-
+            self.update_log_commit()
             sleep(HEARTBEAT_DELAY)
 
 
@@ -174,7 +226,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
         # Handle append entry RPC
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, log, commit_idx
 
-        global raft_state, state
+        global raft_state, state, timeout_counter
 
         # If the sender term is lower, return the correct term
         if kwargs.leader_term < raft_state.get_term():
@@ -186,7 +238,9 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 raft_state.set_term(kwargs.leader_term)
 
             # TODO: If candidate or leader, step down here
-            # TODO: Reset election timer here
+
+            # "Resetting" the election timer
+            timeout_counter = True
 
             # Check the log consistency, return failed RPC if not consistent
             prev_log = load_log.get_log(kwargs.prev_log_idx)
