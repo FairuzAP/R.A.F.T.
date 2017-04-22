@@ -85,6 +85,7 @@ class raftState():
         pass
 
     def set_term(self, term):
+        # For security and stuff, also set voted_for to None during term change
         pass
 
     def set_voted_for(self, vote):
