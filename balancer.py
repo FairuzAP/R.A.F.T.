@@ -12,10 +12,11 @@ import json
 
 
 # Timer constant definition
-HEARTBEAT_DELAY = 0.1
-RPC_TIMEOUT = 0.1
-WORKER_TIMEOUT = 2.0
-ELECTION_TIMEOUT = 2.0
+TIME_SCALE = 1
+ELECTION_TIMEOUT = 3.0 * TIME_SCALE # Will be randomized by adding between -0.5 to 0.5
+WORKER_TIMEOUT = 2.0 * TIME_SCALE   # The time required of non-workload update for a worker to be presumed down
+HEARTBEAT_DELAY = 0.5 * TIME_SCALE  # Also the delay between request_vote RPC in candidacy
+RPC_TIMEOUT = 0.1                   # HTTP REST RPC Timeout
 
 # Global Variable definition
 workerhost = []
@@ -47,7 +48,6 @@ class TermTimeout(Thread):
         Thread.__init__(self)
 
     def start_new_term(self):
-        # Upgrade the current server to a candidate state,
         candidate = Candidacy()
         candidate.daemon = True
         candidate.start()
@@ -60,8 +60,13 @@ class TermTimeout(Thread):
             next_timeout = ELECTION_TIMEOUT + uniform(-0.5,0.5)
             sleep(next_timeout)
 
+            # If become a leader, stop the timer
             if state == 2: break
+
+            # If the timer hasn't been toggled by server, start a new candidacy
             if not timeout_counter: self.start_new_term()
+
+            # Reset the timer
             timeout_counter = False
 
 
@@ -164,6 +169,10 @@ class Heartbeat(Thread):
         worker_counter = []
         self.node = []
 
+        # Set up server state accordingly (presumed to be just after winning the election)
+        election_end = True
+        state = 2
+
         # Initate the balancer node array, and the worker_counter
         for i in range(balancerhost.__len__()):
             self.node.append({'next_idx' : load_log.get_size() + 1, 'last_commit' : None})
@@ -173,10 +182,6 @@ class Heartbeat(Thread):
         self.timeout = Thread(target=self.worker_timeout)
         self.timeout.daemon = True
         self.timeout.start()
-
-        # Set up server state accordingly (presumed to be just after winning the election)
-        election_end = True
-        state = 2
 
         Thread.__init__(self)
 
@@ -340,7 +345,6 @@ class BalancerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(str(json.loads(res)).encode('utf-8'))
 
-
     def handle_append_entry(self, **kwargs):
         # Handle append entry RPC
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, log, commit_idx
@@ -490,11 +494,31 @@ def get_port():
 def main():
     load_conf()
 
+    # Initialize the datastore (reload data if exist)
+    worker_load.init_data()
+    load_log.init_data()
+    raft_state.init_data()
+
     # Get the desired port and prepare the server
     current_port = get_port()
     print(current_port)
 
-    # TODO: Implement this method so that the program can actually start
+    # All server will start as a follower, Start the Balancer Server and the TermTimeout
+    try:
+        balancer = HTTPServer(("", current_port), BalancerHandler)
+        balancer_thread = Thread(target=balancer.serve_forever)
+        balancer_thread.daemon = True
+    except:
+        print("Error in starting balancer server")
+        exit()
+    print("Balancer Server " + server_id.__str__() + " Running at port " + current_port.__str__())
 
+    # Start the first timer daemon and the server
+    timer = TermTimeout()
+    timer.daemon = True
+    timer.start()
+    balancer_thread.start()
+
+    input("\nPress anything to exit..\n\n")
 
 if __name__ == "__main__": main()

@@ -5,17 +5,20 @@ from http.server import BaseHTTPRequestHandler
 from time import sleep
 from os import getpid
 from threading import Thread
-from requests import get, post
+from requests import get
 from sys import exit
 import psutil
 import json
 
 
+# Timer constant definition
+DAEMON_DELAY = 0.5
+RPC_TIMEOUT = 0.1
+
 # Global Variable definition
 workerhost = []
 balancerhost = []
 server_id = 1
-daemon_delay = 0.5
 pid = getpid()
 verbose = True
 
@@ -84,10 +87,10 @@ def worker_daemon_method():
                 'worker_id' : server_id,
                 'worker_load' : current_workload,
             }
-            t = SendWorkload(url + "load/" + json.dumps(load), 0.01)
+            t = SendWorkload(url + "load/" + json.dumps(load), RPC_TIMEOUT)
             t.start()
 
-        sleep(daemon_delay)
+        sleep(DAEMON_DELAY)
 
 
 class WorkerHandler(BaseHTTPRequestHandler):

@@ -78,6 +78,12 @@ class raftState():
     # Stable storage interface for storing server's term and voted_for information
     # TODO: Implement this class
 
+    def init_data(self):
+        # Called after configuration file has been loaded,
+        # Initiate the data needed to store every worker load information
+        # TODO: Implement this method (can be volatile for now or stable if possible)
+        pass
+
     def get_term(self):
         pass
 
