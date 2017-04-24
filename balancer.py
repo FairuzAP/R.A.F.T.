@@ -153,19 +153,11 @@ class Candidacy(Thread):
                     # If the vote is granted, then increment the vote counter
                     if res.vote_granted: self.vote_get += 1
 
-                    # If a host has a higher term, step down
-                    with state_lock:
-                        if res.term > raft_state.get_term():
-                            raft_state.set_term(res.term)
-                            state = 0
-                            break
-
                 # If an error occur during RPC, continue on
                 except Exception as e:
                     if verbose: print(e)
                     continue
 
-            sleep(HEARTBEAT_DELAY)
             with state_lock:
                 this_term = raft_state.get_term()
                 election_end_now = election_end
@@ -174,6 +166,8 @@ class Candidacy(Thread):
                 if start_term == this_term and (not election_end_now) and self.vote_get >= balancerhost.__len__():
                     self.start_new_leadership()
                     break
+
+            sleep(HEARTBEAT_DELAY)
 
 
 class Heartbeat(Thread):
@@ -269,7 +263,6 @@ class Heartbeat(Thread):
             self.node[i].last_commit = self.node[i].next_idx - 1
         else:
             self.node[i].next_idx -= 1
-        return res
 
     def update_log_commit(self):
         # Keep track of how many node commit each uncommited log entry. Commit each log if possible
@@ -317,10 +310,10 @@ class Heartbeat(Thread):
 
         with state_lock:
             start_term = raft_state.get_term()
-            this_term = raft_state.get_term()
 
         # While the term is still the same, with delay in between
-        while True:
+        still_leader = True
+        while still_leader:
 
             # For every other host other than this one,
             for i in range(balancerhost.__len__()):
@@ -328,18 +321,7 @@ class Heartbeat(Thread):
 
                 try:
                     # Send the heartbeat to this host
-                    res = self.send_heartbeat(i, start_term)
-
-                    # If a host has a higher term or term had been changed, step down
-                    with state_lock:
-                        if res.term > raft_state.get_term():
-                            raft_state.set_term(res.term)
-                            self.stop_leading()
-                            break
-
-                        if start_term != raft_state.get_term:
-                            self.stop_leading()
-                            break
+                    self.send_heartbeat(i, start_term)
 
                 # If an error occur during RPC, continue on
                 except Exception as e:
@@ -349,6 +331,12 @@ class Heartbeat(Thread):
             self.update_log_commit()
 
             sleep(HEARTBEAT_DELAY)
+
+            # If term had been changed, step down
+            with state_lock:
+                if start_term != raft_state.get_term:
+                    self.stop_leading()
+                    still_leader = False
 
 
 class BalancerHandler(BaseHTTPRequestHandler):
@@ -401,8 +389,9 @@ class BalancerHandler(BaseHTTPRequestHandler):
             else:
 
                 # If we are a candidate, and the message come from the other winner, stop the election
-                if state == 1 and kwargs.leader_term == raft_state.get_term():
+                if state == 1:
                     election_end = True
+                    state = 0
 
                 # Replace the current term, if the sender's is higher (If leader, will eventually step down)
                 if kwargs.leader_term > raft_state.get_term():
