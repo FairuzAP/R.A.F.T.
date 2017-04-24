@@ -113,7 +113,7 @@ class Candidacy(Thread):
 
     def run(self):
 
-        global raft_state, election_end, server_id, load_log
+        global raft_state, election_end, load_log, state
         this_term = raft_state.get_term()
 
         # While the term is still the same and we haven't lose/won yet, with delay in between
@@ -258,14 +258,14 @@ class Heartbeat(Thread):
     def update_log_commit(self):
         # Keep track of how many node commit each uncommited log entry. Commit each log if possible
         global worker_load, load_log
-        for nextcommit in range(load_log.get_last_commited_id(), load_log.get_size()):
+        for nextcommit in range(load_log.get_last_commited_id() + 1, load_log.get_size() + 1):
             commit = True
 
             for node in self.node:
                 if node.last_commit is None:
                     commit = False
                     break
-                if node.last_commit <= nextcommit:
+                if node.last_commit < nextcommit:
                     commit = False
                     break
 
@@ -377,11 +377,13 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 else:
 
                     # Check if the RPC contains new log to record, and append it if exist
+                    i = 1
                     for item in kwargs.log:
-                        load_log.replace_log(kwargs.prev_log_idx + 1, kwargs.prev_log_term, item.worker_id, item.worker_load)
+                        load_log.replace_log(kwargs.prev_log_idx + i, kwargs.prev_log_term, item.worker_id, item.worker_load)
+                        i += 1
 
                     # Commit all the committed log
-                    for i in range(kwargs.commit_idx, load_log.get_last_commited_id()):
+                    for i in range(load_log.get_last_commited_id() + 1, kwargs.commit_idx + 1):
                         if not load_log.is_commited(i):
                             load_log.commit_log(i,worker_load)
 
@@ -393,6 +395,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
+        # TODO: May take some time, better to redirect
 
         global worker_load
 
