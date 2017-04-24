@@ -76,6 +76,7 @@ class loadLog():
 
 class raftState():
     # Stable storage interface for storing server's term and voted_for information
+    # No need to worry about lock and mutex. Will be taken care of by class user
     # TODO: Implement this class
 
     def init_data(self):
