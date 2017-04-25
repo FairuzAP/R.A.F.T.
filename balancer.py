@@ -53,6 +53,8 @@ class TermTimeout(Thread):
         # CALLER MUST HAVE THE state_lock
         global timeout_counter, election_end, state, raft_state
 
+        print("Timeout, starting new term")
+
         raft_state.set_term(raft_state.get_term() + 1)
         raft_state.set_voted_for(server_id)
         timeout_counter = True
@@ -96,6 +98,8 @@ class Candidacy(Thread):
         # Upgrade the current server to a leader state, CALLER MUST HAVE THE state_lock
         # Set up server state accordingly (presumed to be just after winning the election)
         global  worker_counter, election_end, state
+
+        print("I win, starting Heartbeat")
 
         worker_counter = []
         election_end = True
@@ -180,6 +184,8 @@ class Heartbeat(Thread):
         # Downgrade the current server to a follower state, CALLER MUST HAVE THE state_lock
         global state
         state = 0
+
+        print("Stopping heartbeat, stepping down..")
 
         timer = TermTimeout()
         timer.daemon = True
@@ -362,6 +368,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
                         last_log = load_log.get_log(load_log.get_size())
 
                     if not (last_log.log_term > kwargs.last_log_term or (last_log.log_term == kwargs.last_log_term and last_log.log_id > kwargs.last_log_idx)):
+                        print("Received valid vote request, giving vote..")
                         res = {'success': True, 'term': raft_state.get_term()}
                         raft_state.set_voted_for(kwargs.candidate_id)
                         timeout_counter = True
@@ -389,6 +396,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
                 # If we are a candidate, and the message come from the other winner, stop the election
                 if state == 1:
+                    print("Received valid heartbeat, stopping election..")
                     election_end = True
                     state = 0
 
@@ -410,6 +418,8 @@ class BalancerHandler(BaseHTTPRequestHandler):
                             res = {'success': False, 'term': raft_state.get_term()}
                         else:
 
+                            print("Valid Heartbeat received, appending and committing as necessary")
+
                             # Check if the RPC contains new log to record, and append it if exist
                             i = 1
                             for item in kwargs.log:
@@ -429,18 +439,16 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
-        # TODO: May take some time, better to redirect
 
         global worker_load
 
         with log_lock:
             worker_id = worker_load.get_idle_worker()
         url = workerhost[worker_id] + number.__str__()
-        r = get(url, timeout=RPC_TIMEOUT)
 
-        self.send_response(200)
+        self.send_response(301)
+        self.send_header('Location', url)
         self.end_headers()
-        self.wfile.write(str(r.text).encode('utf-8'))
 
     def handle_update_workload(self, work_id, load):
         # Handle workload broadcast from the worker nodes
@@ -457,6 +465,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 with log_lock:
                     old_load = worker_load.get_load(work_id)
                     if abs(old_load - load) > 5:
+                        print("Appending workload change to log; id="+ work_id.__str__() +" load="+ load.__str__())
                         load_log.append_log(raft_state.get_term(), work_id, load)
 
         self.send_response(200)
