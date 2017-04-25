@@ -3,98 +3,199 @@
 class workerLoad():
     # Interface to store every worker load and up/down information,
     # Can volatile for debugging; MUST be implemented into stable storage later
-
-    def init_data(self):
-        # Called after configuration file has been loaded,
-        # Initiate the data needed to store every worker load information
-        global workerhost
-        # TODO: Implement this method (can be volatile for now or stable if possible)
-        pass
+	# Simpan tabel beban pekerja
+    def __init__(self,nWorker):
+        self.nWorker  = nWorker
+        self.workerload = [0] * (nWorker);
 
     def set_load(self, id, load):
         # Set the load of the appropriate worker, Load of 1000 means the node is down for now
-        pass
-
+        self.workerload[id] = load;
+        
     def get_load(self, id):
         # Return the current load of the worker with the supplied id
-        pass
+        return self.workerload[id]
+
+    def print_worker_load(self):
+        for i in range(0,self.nWorker):
+            print str(i)+"-" + str(wload.get_load(i))
+
 
     def get_idle_worker(self):
         # Return the id of the most idle worker host
-        pass
+        min_idx = 0
+        min_val = self.workerload[min_idx]
+        for i in range(1 , self.nWorker):
+            if (self.get_load(i) < min_val):
+                min_idx = i
+                min_val = self.get_load(i)
+
+        return min_idx
+
+
+class logTuple:
+    def __init__(self,term,idworker,value):
+        self.term = term
+        self.idworker = idworker
+        self.value = value
+
+    def modify(self,term,idworker,value):
+        self.term = term
+        self.idworker = idworker
+        self.value = value
 
 
 class loadLog():
     # Interface to store the RAFT log, where each "act" is an invocation of the workerLoad set_load method
     # Can volatile for debugging; MUST be implemented into stable storage later
-
-    def init_data(self):
-        # Called after configuration file has been loaded,
-        # Initiate the data needed to store the RAFT log
-        # TODO: Implement this method (can be volatile for now or stable if possible)
-        pass
-
-    def is_consistent(self, log_id, term):
-        # Return wether or not a log with the supplied id can be filled with the supplied term
-        pass
+	# <ID, Term, IDworker yang diubah, nilai terbaru>
+	# Pointer ke tuple mana 
+	
+    def __init__(self):
+        self.commitedLog = -1
+        self.nLog = 0
+        self.log = []
 
     def append_log(self, term, worker_id, worker_load):
         # Append the log with the supplied data and return true if consistent, else return false
-        pass
-
+        logItem = logTuple(term,worker_id,worker_load)
+        self.log.append(logItem)
+        self.nLog += 1
+		
     def replace_log(self, log_id, term, worker_id, worker_load):
         # Replace the log with the supplied data and return true if consistent, else return false
         # If the id is in the middle, then delete all the following log
-        pass
+        # Kalau log_id gak ada di log, appendlah..
+		# Log_id ke sekian, ubah dengan yg diminat.. terus atasnya hapus..
+        # Yang sudah dicommit gak boleh direplace
+        # Log id 
+        if (log_id == (self.nLog + 1)):
+            self.append_log(term,worker_id,worker_load)
+        elif (log_id > (self.nLog + 1)):
+            raise Exception('Log_ID is bigger than current Log_ID + 1')
+        elif ( log_id < self.commitedLog):
+            raise Exception('Trying to replace committed log')
+        else:
+            self.log[log_id].modify(term,worker_id,worker_load)
+            for i in range(log_id+1 , self.nLog):
+                print "pop"
+                self.log.pop()
+            self.nLog = log_id+1
+
+    def print_log(self):
+        print "nLog : " + str(self.nLog)
+        print "commitedLog : " + str(self.commitedLog)
+        for i in range(0, self.nLog):
+            print str(i) + " Term : " + str(self.log[i].term) + " WorkerID : " + str(self.log[i].idworker) + "->"+ str(self.log[i].value)
+
+
+        
 
     def get_log(self, log_id):
         # Return the log object in this id in form of a dictionary; None if doesn't exist
         return {
-            'log_id' : 0,
-            'log_term' : 0,
-            'worker_id' : 0,
-            'worker_load' : 0
+            'log_id' : log_id ,
+            'log_term' :  self.log[log_id].term,
+            'worker_id' : self.log[log_id].idworker,
+            'worker_load' : self.log[log_id].value
         }
 
     def commit_log(self, log_id, worker_load):
         # Mark the supplied id log as committed, and pass the changes instructed to the workerLoad object
         # If the supplied id is already committed, then return true
         # If id-1 hasn't been commited yet, then something BAD is going on
-        pass
+		# log_id ke x di commit beneran di worker_load..
+		# Throw exception jika ada masalah..
+        # Id gak ada -> x
+        # Log ini sudah dicommit -> x
+        # Commit log yang gak kontinu -> x
+
+        if ( log_id > (self.nLog-1)):
+            raise Exception('Specified LogID not found in log')
+        elif ( log_id <= self.commitedLog):
+            raise Exception('Specified LogID is already committed')
+        elif ( log_id > self.commitedLog+1 ):
+            raise Exception('Skipped commit')
+        else:
+            target_worker = self.log[log_id].idworker
+            target_value = self.log[log_id].value
+            worker_load.set_load(target_worker,target_value)
+            self.commitedLog = log_id
 
     def is_commited(self, log_id):
         # Return wether or not the log with the supplied id is commited
-        pass
+        if (log_id > self.commitedLog):
+            result = False
+        else:
+            result = True
+        return result
 
     def get_size(self):
         # Return the last log id
-        pass
+        return self.nLog
 
     def get_last_commited_id(self):
-        pass
+        return self.commitedLog
+
 
 
 class raftState():
     # Stable storage interface for storing server's term and voted_for information
-    # No need to worry about lock and mutex. Will be taken care of by class user
     # TODO: Implement this class
-
-    def init_data(self):
-        # Called after configuration file has been loaded,
-        # Initiate the data needed to store every worker load information
-        # TODO: Implement this method (can be volatile for now or stable if possible)
-        pass
+    # term, voted for..
+    def __init__(self):
+        self.term = 0
+        self.votedFor = None
 
     def get_term(self):
-        pass
+        return self.term
+        
 
     def get_voted_for(self):
-        pass
+        return self.votedFor
+        
 
     def set_term(self, term):
         # For security and stuff, also set voted_for to None during term change
-        pass
-
+        if (term < self.term):
+            raise Exception('New term is lower than old term')
+        else:
+            self.term = term
+            self.votedFor = None
+        
     def set_voted_for(self, vote):
-        pass
+        self.votedFor = vote
 
+
+wload = workerLoad(9)
+for i in range(0,9):
+    wload.set_load(i,50-(i*2))
+    print str(i)+"-" + str(wload.get_load(i))
+print "Ternanggur" +  str(wload.get_idle_worker())
+
+log = loadLog()
+log.append_log(1,0,90)
+log.append_log(1,1,50)
+log.append_log(1,1,60)
+log.append_log(1,1,80)
+log.print_log()
+log.replace_log(1,1,1,990)
+log.print_log()
+print log.get_log(0)
+log.commit_log(0,wload)
+log.print_log()
+wload.print_worker_load()
+print log.is_commited(0)
+print log.get_size()
+print log.get_last_commited_id()
+
+raftstate = raftState()
+print "raftstate"
+print raftstate.get_term()
+print raftstate.get_voted_for()
+
+raftstate.set_term(1)
+print raftstate.get_term()
+print raftstate.get_voted_for()
+raftstate.set_voted_for(2)
+print raftstate.get_voted_for()
