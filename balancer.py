@@ -302,14 +302,13 @@ class Heartbeat(Thread):
             for i in range(balancerhost.__len__()):
                 self.node.append({'next_idx' : log_size + 1, 'last_commit' : None})
                 worker_counter.append(False)
+            start_term = raft_state.get_term()
 
         # Start the timeout thread, and it's own thread
         self.timeout = Thread(target=self.worker_timeout)
         self.timeout.daemon = True
         self.timeout.start()
 
-        with state_lock:
-            start_term = raft_state.get_term()
 
         # While the term is still the same, with delay in between
         still_leader = True
@@ -532,9 +531,9 @@ def get_port():
 
 
 def main():
-    load_conf()
 
     # Initialize the datastore (reload data if exist)
+    load_conf()
     worker_load.init_data()
     load_log.init_data()
     raft_state.init_data()

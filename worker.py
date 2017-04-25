@@ -20,7 +20,7 @@ workerhost = []
 balancerhost = []
 server_id = 1
 pid = getpid()
-verbose = True
+verbose = False
 
 
 def load_conf():
@@ -71,7 +71,7 @@ def get_port():
 def get_workload():
     # Get the current main thread workload
 
-    return psutil.Process(pid).cpu_percent(interval=daemon_delay)
+    return psutil.Process(pid).cpu_percent(interval=DAEMON_DELAY)
 
 
 def worker_daemon_method():
@@ -79,8 +79,7 @@ def worker_daemon_method():
 
     while(True):
         current_workload = get_workload().__str__()
-        if verbose:
-            print("Broadcasting current workload of " + current_workload)
+        print("Broadcasting current workload of " + current_workload)
 
         for url in balancerhost:
             load = {
