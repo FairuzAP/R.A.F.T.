@@ -4,7 +4,7 @@ class workerLoad():
     # Interface to store every worker load and up/down information,
     # Can volatile for debugging; MUST be implemented into stable storage later
 	# Simpan tabel beban pekerja
-    def __init__(self,nWorker):
+    def __init__(self, nWorker):
         self.nWorker  = nWorker
         self.workerload = [0] * (nWorker);
 
@@ -18,7 +18,8 @@ class workerLoad():
 
     def print_worker_load(self):
         for i in range(0,self.nWorker):
-            print str(i)+"-" + str(wload.get_load(i))
+            #print str(i)+"-" + str(wload.get_load(i))
+            pass
 
 
     def get_idle_worker(self):
@@ -53,7 +54,7 @@ class loadLog():
 	
     def __init__(self):
         self.commitedLog = -1
-        self.nLog = 0
+        self.nLog = -1
         self.log = []
 
     def append_log(self, term, worker_id, worker_load):
@@ -78,27 +79,39 @@ class loadLog():
         else:
             self.log[log_id].modify(term,worker_id,worker_load)
             for i in range(log_id+1 , self.nLog):
-                print "pop"
+                #print "pop"
                 self.log.pop()
             self.nLog = log_id+1
 
+
     def print_log(self):
-        print "nLog : " + str(self.nLog)
-        print "commitedLog : " + str(self.commitedLog)
+        #print "nLog : " + str(self.nLog)
+        #print "commitedLog : " + str(self.commitedLog)
         for i in range(0, self.nLog):
-            print str(i) + " Term : " + str(self.log[i].term) + " WorkerID : " + str(self.log[i].idworker) + "->"+ str(self.log[i].value)
+            #print str(i) + " Term : " + str(self.log[i].term) + " WorkerID : " + str(self.log[i].idworker) + "->"+ str(self.log[i].value)
+            pass
 
-
-        
 
     def get_log(self, log_id):
         # Return the log object in this id in form of a dictionary; None if doesn't exist
-        return {
-            'log_id' : log_id ,
-            'log_term' :  self.log[log_id].term,
-            'worker_id' : self.log[log_id].idworker,
-            'worker_load' : self.log[log_id].value
-        }
+        if log_id == -1:
+            return {
+                'log_id' : -1,
+                'log_term' :  0,
+                'worker_id' : -1,
+                'worker_load' : -1
+            }
+
+        elif(log_id > self.nLog):
+            return None
+
+        else:
+            return {
+                'log_id' : log_id ,
+                'log_term' :  self.log[log_id].term,
+                'worker_id' : self.log[log_id].idworker,
+                'worker_load' : self.log[log_id].value
+            }
 
     def commit_log(self, log_id, worker_load):
         # Mark the supplied id log as committed, and pass the changes instructed to the workerLoad object
@@ -138,7 +151,6 @@ class loadLog():
         return self.commitedLog
 
 
-
 class raftState():
     # Stable storage interface for storing server's term and voted_for information
     # TODO: Implement this class
@@ -149,11 +161,9 @@ class raftState():
 
     def get_term(self):
         return self.term
-        
 
     def get_voted_for(self):
         return self.votedFor
-        
 
     def set_term(self, term):
         # For security and stuff, also set voted_for to None during term change
@@ -166,7 +176,7 @@ class raftState():
     def set_voted_for(self, vote):
         self.votedFor = vote
 
-
+"""
 wload = workerLoad(9)
 for i in range(0,9):
     wload.set_load(i,50-(i*2))
@@ -199,3 +209,5 @@ print raftstate.get_term()
 print raftstate.get_voted_for()
 raftstate.set_voted_for(2)
 print raftstate.get_voted_for()
+"""
+

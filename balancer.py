@@ -8,15 +8,17 @@ from requests import get
 from sys import exit
 from storage import workerLoad, loadLog, raftState
 from random import seed, uniform
+from urllib.parse import unquote
 import json
+import traceback
 
 
 # Timer constant definition
-TIME_SCALE = 1
+TIME_SCALE = 5
 ELECTION_TIMEOUT = 3.0 * TIME_SCALE # Will be randomized by adding between -0.5 to 0.5
 WORKER_TIMEOUT = 2.0 * TIME_SCALE   # The time required of non-workload update for a worker to be presumed down
 HEARTBEAT_DELAY = 0.5 * TIME_SCALE  # Also the delay between request_vote RPC in candidacy
-RPC_TIMEOUT = 0.1                   # HTTP REST RPC Timeout
+RPC_TIMEOUT = 0.5                   # HTTP REST RPC Timeout
 
 # Global Variable definition
 workerhost = []
@@ -25,7 +27,7 @@ verbose = True
 server_id = 1
 
 # Global variables containing server critical information
-worker_load = workerLoad()  # The global worker load storage interface
+worker_load = None          # The global worker load storage interface
 load_log = loadLog()        # The global RAFT log storage interface
 
 raft_state = raftState()    # The server's current term and voted_for information
@@ -117,9 +119,11 @@ class Candidacy(Thread):
         if verbose: print("Sending request vote RPC to " + balancerhost[balancer_id])
         try:
             r = get(balancerhost[balancer_id] + "vote/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
-            result = json.loads(r.json())
-        except Exception as e:
-            if verbose: print(e)
+            result = json.loads(r.text)
+        except:
+            if verbose:
+                print("EXCEPTION SENDING VOTE REQUEST")
+                traceback.print_exc()
             result = None
 
         return result
@@ -138,8 +142,8 @@ class Candidacy(Thread):
         while start_term == this_term and (not election_end_now):
 
             with log_lock:
-                last_log_idx = load_log.get_log(load_log.get_size()).log_id
-                last_log_term = load_log.get_log(load_log.get_size()).log_term
+                last_log_idx = load_log.get_log(load_log.get_size())['log_id']
+                last_log_term = load_log.get_log(load_log.get_size())['log_term']
 
             # For every other host other than this one,
             for i in range(balancerhost.__len__()):
@@ -155,11 +159,13 @@ class Candidacy(Thread):
                     })
 
                     # If the vote is granted, then increment the vote counter
-                    if res.vote_granted: self.vote_get += 1
+                    if res['success']: self.vote_get += 1
 
                 # If an error occur during RPC, continue on
-                except Exception as e:
-                    if verbose: print(e)
+                except:
+                    if verbose:
+                        print("EXCEPTION AT CANDIDACY RPC")
+                        traceback.print_exc()
                     continue
 
             with state_lock:
@@ -230,9 +236,11 @@ class Heartbeat(Thread):
         if verbose: print("Sending append entry RPC to " + balancerhost[balancer_id])
         try:
             r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
-            result = json.loads(r.json())
-        except Exception as e:
-            if verbose: print(e)
+            result = json.loads(r.text)
+        except:
+            if verbose:
+                print("EXCEPTION AT APPEND ENTRY RPC")
+                traceback.print_exc()
             result = None
 
         return result
@@ -251,20 +259,20 @@ class Heartbeat(Thread):
             new_log = []
             for i in range(self.node[i].next_idx, load_log.get_size() + 1):
                 next_log = load_log.get_log(i)
-                new_log.append({'worker_id': next_log.worker_id, 'worker_load': next_log.worker_load})
+                new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
 
         # Send the apropriate RPC according to the host log stat
         res = self.do_append_entry(i, **{
             'leader_term': this_term,
             'leader_id': server_id,
-            'prev_log_idx': prev_log.log_id,
-            'prev_log_term': prev_log.log_term,
+            'prev_log_idx': prev_log['log_id'],
+            'prev_log_term': prev_log['log_term'],
             'new_log': new_log,
             'commit_idx': last_commit
         })
 
         # Modify the next index accordingly
-        if res.success and (res.term <= this_term):
+        if res['success'] and (res['term'] <= this_term):
             self.node[i].next_idx += new_log.__len__()
             self.node[i].last_commit = self.node[i].next_idx - 1
         else:
@@ -329,8 +337,10 @@ class Heartbeat(Thread):
                     self.send_heartbeat(i, start_term)
 
                 # If an error occur during RPC, continue on
-                except Exception as e:
-                    if verbose: print(e)
+                except:
+                    if verbose:
+                        print("EXCEPTION AT HEARTBEAT RPC")
+                        traceback.print_exc()
                     continue
 
             self.update_log_commit()
@@ -355,22 +365,22 @@ class BalancerHandler(BaseHTTPRequestHandler):
         with state_lock:
 
             # Replace the current term, if the sender's is higher (If leader or candidate, will eventually step down)
-            if kwargs.candidate_term > raft_state.get_term():
-                raft_state.set_term(kwargs.leader_term)
+            if kwargs['candidate_term'] > raft_state.get_term():
+                raft_state.set_term(kwargs['candidate_term'])
 
             # If the term is similar and we haven't voted for this term yet
             res = None
-            if kwargs.candidate_term == raft_state.get_term():
+            if kwargs['candidate_term'] == raft_state.get_term():
                 if raft_state.get_voted_for() is None:
 
                     # And if the candidate log is at least as complete as ours
                     with log_lock:
                         last_log = load_log.get_log(load_log.get_size())
 
-                    if not (last_log.log_term > kwargs.last_log_term or (last_log.log_term == kwargs.last_log_term and last_log.log_id > kwargs.last_log_idx)):
+                    if not (last_log['log_term'] > kwargs['last_log_term'] or (last_log['log_term'] == kwargs['last_log_term'] and last_log['log_id'] > kwargs['last_log_idx'])):
                         print("Received valid vote request, giving vote..")
                         res = {'success': True, 'term': raft_state.get_term()}
-                        raft_state.set_voted_for(kwargs.candidate_id)
+                        raft_state.set_voted_for(kwargs['candidate_id'])
                         timeout_counter = True
 
             # If not able to vote, return success = false
@@ -379,7 +389,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(str(json.loads(res)).encode('utf-8'))
+        self.wfile.write(str(json.dumps(res)).encode('utf-8'))
 
     def handle_append_entry(self, **kwargs):
         # Handle append entry RPC
@@ -390,7 +400,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
         # If the sender term is lower, return the correct term
         with state_lock:
 
-            if kwargs.leader_term < raft_state.get_term():
+            if kwargs['leader_term'] < raft_state.get_term():
                 res = { 'success' : False, 'term' : raft_state.get_term() }
             else:
 
@@ -401,8 +411,8 @@ class BalancerHandler(BaseHTTPRequestHandler):
                     state = 0
 
                 # Replace the current term, if the sender's is higher (If leader, will eventually step down)
-                if kwargs.leader_term > raft_state.get_term():
-                    raft_state.set_term(kwargs.leader_term)
+                if kwargs['leader_term'] > raft_state.get_term():
+                    raft_state.set_term(kwargs['leader_term'])
 
                 # "Resetting" the election timer
                 timeout_counter = True
@@ -410,11 +420,11 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 # Check the log consistency, return failed RPC if not consistent
                 with log_lock:
 
-                    prev_log = load_log.get_log(kwargs.prev_log_idx)
+                    prev_log = load_log.get_log(kwargs['prev_log_idx'])
                     if prev_log is None:
                         res = { 'success': False, 'term': raft_state.get_term() }
                     else:
-                        if prev_log.log_term != kwargs.prev_log_term:
+                        if prev_log['log_term'] != kwargs['prev_log_term']:
                             res = {'success': False, 'term': raft_state.get_term()}
                         else:
 
@@ -422,12 +432,12 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
                             # Check if the RPC contains new log to record, and append it if exist
                             i = 1
-                            for item in kwargs.log:
-                                load_log.replace_log(kwargs.prev_log_idx + i, kwargs.prev_log_term, item.worker_id, item.worker_load)
+                            for item in kwargs['log']:
+                                load_log.replace_log(kwargs['prev_log_idx'] + i, kwargs['prev_log_term'], item.worker_id, item.worker_load)
                                 i += 1
 
                             # Commit all the committed log
-                            for i in range(load_log.get_last_commited_id() + 1, kwargs.commit_idx + 1):
+                            for i in range(load_log.get_last_commited_id() + 1, kwargs['commit_idx'] + 1):
                                 if not load_log.is_commited(i):
                                     load_log.commit_log(i,worker_load)
 
@@ -435,7 +445,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(str(json.loads(res)).encode('utf-8'))
+        self.wfile.write(str(json.dumps(res)).encode('utf-8'))
 
     def handle_worker_request(self, number):
         # Handle client request to access the worker (forward to the least busy worker)
@@ -476,23 +486,24 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
         try:
             args = self.path.split('/')
-
             if args[1] == 'append':
-                dict = json.loads(args[2])
+                dict = json.loads(unquote(args[2]))
                 self.handle_append_entry(**dict)
 
             elif args[1] == 'load':
-                dict = json.loads(args[2])
-                self.handle_update_workload(dict.worker_id, dict.worker_load)
+                dict = json.loads(unquote(args[2]))
+                self.handle_update_workload(dict['worker_id'], dict['worker_load'])
 
             elif args[1] == 'vote':
-                dict = json.loads(args[2])
+                dict = json.loads(unquote(args[2]))
                 self.handle_request_vote(**dict)
 
             else: self.handle_worker_request(int(args[1]))
 
-        except Exception as e:
-            if verbose: print(e)
+        except:
+            if verbose:
+                print("EXCEPTION AT SERVER HANDLER")
+                traceback.print_exc()
             self.send_response(500)
             self.end_headers()
 
@@ -541,11 +552,11 @@ def get_port():
 
 def main():
 
+    global worker_load
+
     # Initialize the datastore (reload data if exist)
     load_conf()
-    worker_load.init_data()
-    load_log.init_data()
-    raft_state.init_data()
+    worker_load = workerLoad(workerhost.__len__())
 
     # Get the desired port and prepare the server
     current_port = get_port()
