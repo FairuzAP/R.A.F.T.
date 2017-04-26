@@ -123,7 +123,7 @@ class loadLog():
         # Log ini sudah dicommit -> x
         # Commit log yang gak kontinu -> x
 
-        if ( log_id > (self.nLog-1)):
+        if ( log_id > (self.nLog)):
             raise Exception('Specified LogID not found in log')
         elif ( log_id <= self.commitedLog):
             raise Exception('Specified LogID is already committed')

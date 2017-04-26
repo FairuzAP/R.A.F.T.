@@ -4,7 +4,7 @@ from http.server import HTTPServer
 from http.server import BaseHTTPRequestHandler
 from time import sleep
 from threading import Thread, Lock
-from requests import get
+from requests import get, exceptions
 from sys import exit
 from storage import workerLoad, loadLog, raftState
 from random import seed, uniform
@@ -14,11 +14,11 @@ import traceback
 
 
 # Timer constant definition
-TIME_SCALE = 5
-ELECTION_TIMEOUT = 3.0 * TIME_SCALE # Will be randomized by adding between -0.5 to 0.5
-WORKER_TIMEOUT = 2.0 * TIME_SCALE   # The time required of non-workload update for a worker to be presumed down
-HEARTBEAT_DELAY = 0.5 * TIME_SCALE  # Also the delay between request_vote RPC in candidacy
-RPC_TIMEOUT = 0.5                   # HTTP REST RPC Timeout
+TIME_SCALE = 1
+ELECTION_TIMEOUT = 5.0 * TIME_SCALE # Will be randomized by adding between -0.5 to 0.5
+WORKER_TIMEOUT = 10.0 * TIME_SCALE  # The time required of non-workload update for a worker to be presumed down
+HEARTBEAT_DELAY = 2 * TIME_SCALE    # Also the delay between request_vote RPC in candidacy
+RPC_TIMEOUT = 1                     # HTTP REST RPC Timeout
 
 # Global Variable definition
 workerhost = []
@@ -55,9 +55,10 @@ class TermTimeout(Thread):
         # CALLER MUST HAVE THE state_lock
         global timeout_counter, election_end, state, raft_state
 
-        print("Timeout, starting new term")
+        next_term = raft_state.get_term() + 1
+        print("Timeout, starting new term " + str(next_term))
 
-        raft_state.set_term(raft_state.get_term() + 1)
+        raft_state.set_term(next_term)
         raft_state.set_voted_for(server_id)
         timeout_counter = True
         election_end = False
@@ -70,13 +71,13 @@ class TermTimeout(Thread):
     def run(self):
         global timeout_counter
         with state_lock:
-            timeout_counter = True
+            timeout_counter = False
         seed()
 
         while True:
 
             # Randomize (to some extent) the election timeout
-            next_timeout = ELECTION_TIMEOUT + uniform(-0.5,0.5)
+            next_timeout = ELECTION_TIMEOUT + uniform(-1.0,1.0)
             sleep(next_timeout)
 
             with state_lock:
@@ -85,7 +86,8 @@ class TermTimeout(Thread):
                 if state == 2: break
 
                 # If the timer hasn't been toggled by server, start a new candidacy
-                if not timeout_counter: self.start_new_term()
+                if not timeout_counter:
+                    self.start_new_term()
 
                 # Reset the timer
                 timeout_counter = False
@@ -115,17 +117,20 @@ class Candidacy(Thread):
         # Send a vote request to the balancer node with the supplied id
         # kwargs should contains candidate_id, candidate_term, last_log_idx, and last_log_term
         # Return the results of 'success' and 'term' in form of dictionary. Or None if something bad happens
-
+        result = None
         if verbose: print("Sending request vote RPC to " + balancerhost[balancer_id])
+
         try:
             r = get(balancerhost[balancer_id] + "vote/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
             result = json.loads(r.text)
+        except (exceptions.Timeout, exceptions.ConnectTimeout, exceptions.ReadTimeout) as e:
+            print("Timeout..")
         except:
             if verbose:
                 print("EXCEPTION SENDING VOTE REQUEST")
                 traceback.print_exc()
-            result = None
 
+        if verbose: print("Received response " + str(result))
         return result
 
     def run(self):
@@ -158,6 +163,8 @@ class Candidacy(Thread):
                         'last_log_term': last_log_term
                     })
 
+                    if res is None: continue
+
                     # If the vote is granted, then increment the vote counter
                     if res['success']: self.vote_get += 1
 
@@ -173,7 +180,7 @@ class Candidacy(Thread):
                 election_end_now = election_end
 
                 # If enough vote get, then begin as leader
-                if start_term == this_term and (not election_end_now) and self.vote_get >= balancerhost.__len__():
+                if start_term == this_term and (not election_end_now) and self.vote_get >= balancerhost.__len__()/2:
                     self.start_new_leadership()
                     break
 
@@ -218,9 +225,10 @@ class Heartbeat(Thread):
             with state_lock:
                 with log_lock:
 
-                    for i in range(balancerhost.__len__()):
+                    for i in range(workerhost.__len__()):
                         if not worker_counter[i]:
                             if worker_load.get_load(i) < 1000:
+                                print("Worker id "+ i.__str__() +" timeout..")
                                 load_log.append_log(start_term, i, 1000)
                         worker_counter[i] = False
 
@@ -233,16 +241,20 @@ class Heartbeat(Thread):
         # kwargs should contains leader_term, leader_id, prev_log_idx, prev_log_term, worker_id, worker_load, commit_idx
         # Return the results of 'success' and 'term' in form of dictionary. Or None if something bad happens
 
-        if verbose: print("Sending append entry RPC to " + balancerhost[balancer_id])
+        if verbose: print("Sending append entry "+ str(kwargs['new_log']) +" RPC to " + balancerhost[balancer_id])
+        result = None
+
         try:
             r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
             result = json.loads(r.text)
+        except (exceptions.Timeout, exceptions.ConnectTimeout, exceptions.ReadTimeout) as e:
+            print("Timeout..")
         except:
             if verbose:
                 print("EXCEPTION AT APPEND ENTRY RPC")
                 traceback.print_exc()
-            result = None
 
+        if verbose: print("Received response " + str(result))
         return result
 
     def send_heartbeat(self, i, this_term):
@@ -254,11 +266,11 @@ class Heartbeat(Thread):
 
         # Prepare all the necessary new log
         with log_lock:
-            prev_log = load_log.get_log(self.node[i].next_idx - 1)
+            prev_log = load_log.get_log(self.node[i]['next_idx'] - 1)
             last_commit = load_log.get_last_commited_id()
             new_log = []
-            for i in range(self.node[i].next_idx, load_log.get_size() + 1):
-                next_log = load_log.get_log(i)
+            for j in range(self.node[i]['next_idx'], load_log.get_size() + 1):
+                next_log = load_log.get_log(j)
                 new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
 
         # Send the apropriate RPC according to the host log stat
@@ -271,12 +283,14 @@ class Heartbeat(Thread):
             'commit_idx': last_commit
         })
 
+        if res is None: return
+
         # Modify the next index accordingly
         if res['success'] and (res['term'] <= this_term):
-            self.node[i].next_idx += new_log.__len__()
-            self.node[i].last_commit = self.node[i].next_idx - 1
+            self.node[i]['next_idx'] += new_log.__len__()
+            self.node[i]['last_commit'] = self.node[i]['next_idx'] - 1
         else:
-            self.node[i].next_idx -= 1
+            self.node[i]['next_idx'] -= 1
 
     def update_log_commit(self):
         # Keep track of how many node commit each uncommited log entry. Commit each log if possible
@@ -284,17 +298,23 @@ class Heartbeat(Thread):
         with log_lock:
 
             for nextcommit in range(load_log.get_last_commited_id() + 1, load_log.get_size() + 1):
-                commit = True
+                commit = 0
 
-                for node in self.node:
-                    if node.last_commit is None:
-                        commit = False
-                        break
-                    if node.last_commit < nextcommit:
-                        commit = False
-                        break
+                for i in range(balancerhost.__len__()):
+                    if i == server_id: continue
 
-                if commit:
+                    last_commit = self.node[i]['last_commit']
+                    print("Last commit is " + str(last_commit))
+
+                    if last_commit is None:
+                        pass
+                    elif last_commit < nextcommit:
+                        pass
+                    else:
+                        commit += 1
+
+                if commit > balancerhost.__len__() / 2:
+                    print("Commiting log id " + str(nextcommit))
                     load_log.commit_log(nextcommit, worker_load)
                 else:
                     break
@@ -341,7 +361,6 @@ class Heartbeat(Thread):
                     if verbose:
                         print("EXCEPTION AT HEARTBEAT RPC")
                         traceback.print_exc()
-                    continue
 
             self.update_log_commit()
 
@@ -349,7 +368,7 @@ class Heartbeat(Thread):
 
             # If term had been changed, step down
             with state_lock:
-                if start_term != raft_state.get_term:
+                if start_term != raft_state.get_term():
                     self.stop_leading()
                     still_leader = False
 
@@ -378,7 +397,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
                         last_log = load_log.get_log(load_log.get_size())
 
                     if not (last_log['log_term'] > kwargs['last_log_term'] or (last_log['log_term'] == kwargs['last_log_term'] and last_log['log_id'] > kwargs['last_log_idx'])):
-                        print("Received valid vote request, giving vote..")
+                        print("Valid vote request, giving vote..")
                         res = {'success': True, 'term': raft_state.get_term()}
                         raft_state.set_voted_for(kwargs['candidate_id'])
                         timeout_counter = True
@@ -428,17 +447,21 @@ class BalancerHandler(BaseHTTPRequestHandler):
                             res = {'success': False, 'term': raft_state.get_term()}
                         else:
 
-                            print("Valid Heartbeat received, appending and committing as necessary")
+                            if not kwargs['new_log']:
+                                print("Empty valid Heartbeat received")
+                            else:
+                                print("Heartbeat received: " + kwargs['new_log'].__str__())
 
                             # Check if the RPC contains new log to record, and append it if exist
                             i = 1
-                            for item in kwargs['log']:
-                                load_log.replace_log(kwargs['prev_log_idx'] + i, kwargs['prev_log_term'], item.worker_id, item.worker_load)
+                            for item in kwargs['new_log']:
+                                load_log.replace_log(kwargs['prev_log_idx'] + i, kwargs['leader_term'], item['worker_id'], item['worker_load'])
                                 i += 1
 
                             # Commit all the committed log
                             for i in range(load_log.get_last_commited_id() + 1, kwargs['commit_idx'] + 1):
                                 if not load_log.is_commited(i):
+                                    print("Commiting log id " + str(i))
                                     load_log.commit_log(i,worker_load)
 
                             res = {'success': True, 'term': raft_state.get_term()}
@@ -474,9 +497,9 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 # Check if the difference is significant
                 with log_lock:
                     old_load = worker_load.get_load(work_id)
-                    if abs(old_load - load) > 5:
+                    if abs(old_load - float(load)) > 5:
                         print("Appending workload change to log; id="+ work_id.__str__() +" load="+ load.__str__())
-                        load_log.append_log(raft_state.get_term(), work_id, load)
+                        load_log.append_log(raft_state.get_term(), work_id, float(load))
 
         self.send_response(200)
         self.end_headers()
@@ -506,6 +529,8 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
             self.send_response(500)
             self.end_headers()
+
+    # def log_message(self, format, *args): return
 
 
 def load_conf():
