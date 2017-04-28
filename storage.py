@@ -1,16 +1,39 @@
 #!/usr/bin/python
+import pickle
+
 
 class workerLoad():
     # Interface to store every worker load and up/down information,
     # Can volatile for debugging; MUST be implemented into stable storage later
 	# Simpan tabel beban pekerja
+
     def __init__(self, nWorker, server_id):
         self.nWorker  = nWorker
         self.workerload = [0] * (nWorker);
+        self.server_id = server_id
+        self.persistent_save_init()
+
+    def persistent_save_init(self):
+        self.filename = str(self.server_id) + "_workerload.txt"
+        try:
+            with open(self.filename, 'rb') as filedata:
+                self.nWorker = pickle.load(filedata)
+                self.workerload = pickle.load(filedata)
+        except Exception:
+            self.file = open(self.filename, 'w')
+        print(self.filename)
+    
+
+    def persistent_save(self):
+        with open(self.filename, 'wb') as filedata:
+            pickle.dump(self.nWorker,filedata, pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.workerload , filedata , pickle.HIGHEST_PROTOCOL)
 
     def set_load(self, id, load):
         # Set the load of the appropriate worker, Load of 1000 means the node is down for now
         self.workerload[id] = load;
+        self.persistent_save()
+       
         
     def get_load(self, id):
         # Return the current load of the worker with the supplied id
@@ -18,7 +41,7 @@ class workerLoad():
 
     def print_worker_load(self):
         for i in range(0,self.nWorker):
-            #print str(i)+"-" + str(wload.get_load(i))
+            print (str(i)+"-" + str(wload.get_load(i)))
             pass
 
 
@@ -51,17 +74,38 @@ class loadLog():
     # Can volatile for debugging; MUST be implemented into stable storage later
 	# <ID, Term, IDworker yang diubah, nilai terbaru>
 	# Pointer ke tuple mana 
-	
+
     def __init__(self, server_id):
         self.commitedLog = -1
         self.nLog = -1
         self.log = []
+        self.server_id = server_id
+        self.persistent_save_init()
+
+
+    def persistent_save_init(self):
+        self.filename = str(self.server_id) + "_loadlog.txt"
+        try:
+            with open(self.filename, 'rb') as filedata:
+                self.commitedLog = pickle.load(filedata)
+                self.nLog = pickle.load(filedata)
+                self.log = pickle.load(filedata)
+        except Exception:
+            self.file = open(self.filename, 'w')
+        print(self.filename)
+
+    def persistent_save(self):
+        with open(self.filename, 'wb') as filedata:
+            pickle.dump(self.commitedLog,filedata, pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.nLog , filedata , pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.log , filedata , pickle.HIGHEST_PROTOCOL)
 
     def append_log(self, term, worker_id, worker_load):
         # Append the log with the supplied data and return true if consistent, else return false
         logItem = logTuple(term,worker_id,worker_load)
         self.log.append(logItem)
         self.nLog += 1
+        self.persistent_save()
 		
     def replace_log(self, log_id, term, worker_id, worker_load):
         # Replace the log with the supplied data and return true if consistent, else return false
@@ -82,6 +126,7 @@ class loadLog():
                 #print "pop"
                 self.log.pop()
             self.nLog = log_id+1
+            self.persistent_save()
 
 
     def print_log(self):
@@ -134,6 +179,7 @@ class loadLog():
             target_value = self.log[log_id].value
             worker_load.set_load(target_worker,target_value)
             self.commitedLog = log_id
+            self.persistent_save()
 
     def is_commited(self, log_id):
         # Return wether or not the log with the supplied id is commited
@@ -157,6 +203,23 @@ class raftState():
     def __init__(self, server_id):
         self.term = 0
         self.votedFor = None
+        self.server_id = server_id
+        self.persistent_save_init()
+
+    def persistent_save_init(self):
+        self.filename = str(self.server_id) + "_raftState.txt"
+        try:
+            with open(self.filename, 'rb') as filedata:
+                self.term = pickle.load(filedata)
+                self.votedFor = pickle.load(filedata)
+        except Exception:
+            self.file = open(self.filename, 'w')
+        print(self.filename)
+
+    def persistent_save(self):
+        with open(self.filename, 'wb') as filedata:
+            pickle.dump(self.term,filedata, pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.votedFor , filedata , pickle.HIGHEST_PROTOCOL)
 
     def get_term(self):
         return self.term
@@ -171,18 +234,23 @@ class raftState():
         else:
             self.term = term
             self.votedFor = None
+            self.persistent_save()
         
     def set_voted_for(self, vote):
         self.votedFor = vote
+        self.persistent_save()
 
-"""
-wload = workerLoad(9)
+
+
+
+
+wload = workerLoad(9,2)
 for i in range(0,9):
     wload.set_load(i,50-(i*2))
-    print str(i)+"-" + str(wload.get_load(i))
-print "Ternanggur" +  str(wload.get_idle_worker())
+    print (str(i)+"-" + str(wload.get_load(i)))
+print ("Ternanggur" +  str(wload.get_idle_worker()))
 
-log = loadLog()
+log = loadLog(2)
 log.append_log(1,0,90)
 log.append_log(1,1,50)
 log.append_log(1,1,60)
@@ -190,23 +258,23 @@ log.append_log(1,1,80)
 log.print_log()
 log.replace_log(1,1,1,990)
 log.print_log()
-print log.get_log(0)
+print (log.get_log(0))
 log.commit_log(0,wload)
 log.print_log()
 wload.print_worker_load()
-print log.is_commited(0)
-print log.get_size()
-print log.get_last_commited_id()
+print (log.is_commited(0))
+print (log.get_size())
+print (log.get_last_commited_id())
 
-raftstate = raftState()
-print "raftstate"
-print raftstate.get_term()
-print raftstate.get_voted_for()
+raftstate = raftState(5)
+print ("raftstate")
+print (raftstate.get_term())
+print (raftstate.get_voted_for())
 
 raftstate.set_term(1)
-print raftstate.get_term()
-print raftstate.get_voted_for()
+print (raftstate.get_term())
+print (raftstate.get_voted_for())
 raftstate.set_voted_for(2)
-print raftstate.get_voted_for()
-"""
+print (raftstate.get_voted_for())
+
 
