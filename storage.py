@@ -4,7 +4,7 @@ class workerLoad():
     # Interface to store every worker load and up/down information,
     # Can volatile for debugging; MUST be implemented into stable storage later
 	# Simpan tabel beban pekerja
-    def __init__(self, nWorker):
+    def __init__(self, nWorker, server_id):
         self.nWorker  = nWorker
         self.workerload = [0] * (nWorker);
 
@@ -52,7 +52,7 @@ class loadLog():
 	# <ID, Term, IDworker yang diubah, nilai terbaru>
 	# Pointer ke tuple mana 
 	
-    def __init__(self):
+    def __init__(self, server_id):
         self.commitedLog = -1
         self.nLog = -1
         self.log = []
@@ -153,9 +153,8 @@ class loadLog():
 
 class raftState():
     # Stable storage interface for storing server's term and voted_for information
-    # TODO: Implement this class
     # term, voted for..
-    def __init__(self):
+    def __init__(self, server_id):
         self.term = 0
         self.votedFor = None
 

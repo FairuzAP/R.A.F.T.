@@ -48,7 +48,6 @@ class TermTimeout(Thread):
     # If during the second check the timeout_counter value is still false, meaning that the leader haven't
     # contacted the server in a while. So the server will become a candidate
     # Will kill itself in case the server become a leader
-    # TODO: Not exactly the standard way to do election timeout, better to use event-thingy
 
     def start_new_term(self):
         # Set up server state accordingly, increment term, vote for self, and initiate lose_election.
@@ -598,9 +597,9 @@ if __name__ == "__main__":
     print("Balancer Server " + server_id.__str__() + " Running at port " + current_port.__str__())
 
     # Initialize the datastore (reload data if exist)
-    worker_load = workerLoad(workerhost.__len__())
-    load_log = loadLog()
-    raft_state = raftState()
+    worker_load = workerLoad(workerhost.__len__(), server_id)
+    load_log = loadLog(server_id)
+    raft_state = raftState(server_id)
 
     # Start the first timer daemon and the server
     timer = TermTimeout()
