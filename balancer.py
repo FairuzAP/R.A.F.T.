@@ -263,7 +263,7 @@ class Heartbeat(Thread):
                 new_log = []
                 for j in range(self.node[i]['next_idx'], load_log.get_size() + 1):
                     next_log = load_log.get_log(j)
-                    new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
+                    new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load'], 'log_term': next_log['log_term']})
                     break
 
             # Send the apropriate RPC according to the host log stat
@@ -438,9 +438,11 @@ class BalancerHandler(BaseHTTPRequestHandler):
                     prev_log = load_log.get_log(kwargs['prev_log_idx'])
                     if prev_log is None:
                         res = { 'success': False, 'term': raft_state.get_term() }
+                        print("Invalid Heartbeat received: " + kwargs.__str__())
                     else:
                         if prev_log['log_term'] != kwargs['prev_log_term']:
                             res = {'success': False, 'term': raft_state.get_term()}
+                            print("Invalid Heartbeat received: " + kwargs.__str__())
                         else:
 
                             if not kwargs['new_log']:
@@ -451,7 +453,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
                             # Check if the RPC contains new log to record, and append it if exist
                             i = 1
                             for item in kwargs['new_log']:
-                                load_log.replace_log(kwargs['prev_log_idx'] + i, kwargs['leader_term'], item['worker_id'], item['worker_load'])
+                                load_log.replace_log(kwargs['prev_log_idx'] + i, item['log_term'], item['worker_id'], item['worker_load'])
                                 i += 1
 
                             # Commit all the committed log
@@ -534,8 +536,6 @@ class BalancerHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
             self.send_response(500)
             self.end_headers()
-
-    # def log_message(self, format, *args): return
 
     def log_message(self, format, *args): return
 
