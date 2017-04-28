@@ -143,7 +143,7 @@ class SendWorkload(Thread):
         return
 
 
-def main():
+if __name__ == "__main__":
     load_conf()
 
     # Get the desired port and prepare the server
@@ -164,7 +164,4 @@ def main():
     worker_thread.start()
 
     input("\nPress anything to exit..\n\n")
-
-
-if __name__ == "__main__": main()
 

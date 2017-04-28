@@ -28,9 +28,9 @@ server_id = 1
 
 # Global variables containing server critical information
 worker_load = None          # The global worker load storage interface
-load_log = loadLog()        # The global RAFT log storage interface
+load_log = None             # The global RAFT log storage interface
 
-raft_state = raftState()    # The server's current term and voted_for information
+raft_state = None           # The server's current term and voted_for information
 state = 0                   # The state of the server, 0=Follower, 1=Candidate, 2=Leader
 timeout_counter = True      # Wether or not the server had received words from leader since the last ELECTION_TIMEOUT
 election_end = False        # Wether or not the election for this term had ended
@@ -122,13 +122,10 @@ class Candidacy(Thread):
 
         try:
             r = get(balancerhost[balancer_id] + "vote/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
+        except Exception as e:
+            print("Failure sending VoteRequest RPC")
+        else:
             result = json.loads(r.text)
-        except (exceptions.Timeout, exceptions.ConnectTimeout, exceptions.ReadTimeout) as e:
-            print("Timeout..")
-        except:
-            if verbose:
-                print("EXCEPTION SENDING VOTE REQUEST")
-                traceback.print_exc()
 
         if verbose: print("Received response " + str(result))
         return result
@@ -246,13 +243,10 @@ class Heartbeat(Thread):
 
         try:
             r = get(balancerhost[balancer_id] + "append/" + json.dumps(kwargs), timeout = RPC_TIMEOUT)
+        except Exception as e:
+            print("Failure sending AppendEntry RPC")
+        else:
             result = json.loads(r.text)
-        except (exceptions.Timeout, exceptions.ConnectTimeout, exceptions.ReadTimeout) as e:
-            print("Timeout..")
-        except:
-            if verbose:
-                print("EXCEPTION AT APPEND ENTRY RPC")
-                traceback.print_exc()
 
         if verbose: print("Received response " + str(result))
         return result
@@ -263,34 +257,40 @@ class Heartbeat(Thread):
         # Consistent with the state of this server
 
         global load_log
+        try:
+            # Prepare all the necessary new log
+            with log_lock:
+                prev_log = load_log.get_log(self.node[i]['next_idx'] - 1)
+                last_commit = load_log.get_last_commited_id()
+                new_log = []
+                for j in range(self.node[i]['next_idx'], load_log.get_size() + 1):
+                    next_log = load_log.get_log(j)
+                    new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
 
-        # Prepare all the necessary new log
-        with log_lock:
-            prev_log = load_log.get_log(self.node[i]['next_idx'] - 1)
-            last_commit = load_log.get_last_commited_id()
-            new_log = []
-            for j in range(self.node[i]['next_idx'], load_log.get_size() + 1):
-                next_log = load_log.get_log(j)
-                new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
+            # Send the apropriate RPC according to the host log stat
+            res = self.do_append_entry(i, **{
+                'leader_term': this_term,
+                'leader_id': server_id,
+                'prev_log_idx': prev_log['log_id'],
+                'prev_log_term': prev_log['log_term'],
+                'new_log': new_log,
+                'commit_idx': last_commit
+            })
 
-        # Send the apropriate RPC according to the host log stat
-        res = self.do_append_entry(i, **{
-            'leader_term': this_term,
-            'leader_id': server_id,
-            'prev_log_idx': prev_log['log_id'],
-            'prev_log_term': prev_log['log_term'],
-            'new_log': new_log,
-            'commit_idx': last_commit
-        })
+            if res is None: return
 
-        if res is None: return
+            # Modify the next index accordingly
+            if res['success'] and (res['term'] <= this_term):
+                self.node[i]['next_idx'] += new_log.__len__()
+                self.node[i]['last_commit'] = self.node[i]['next_idx'] - 1
+            else:
+                self.node[i]['next_idx'] -= 1
+                # If an error occur during RPC, continue on
 
-        # Modify the next index accordingly
-        if res['success'] and (res['term'] <= this_term):
-            self.node[i]['next_idx'] += new_log.__len__()
-            self.node[i]['last_commit'] = self.node[i]['next_idx'] - 1
-        else:
-            self.node[i]['next_idx'] -= 1
+        except:
+            if verbose:
+                print("EXCEPTION AT HEARTBEAT RPC")
+                traceback.print_exc()
 
     def update_log_commit(self):
         # Keep track of how many node commit each uncommited log entry. Commit each log if possible
@@ -298,13 +298,12 @@ class Heartbeat(Thread):
         with log_lock:
 
             for nextcommit in range(load_log.get_last_commited_id() + 1, load_log.get_size() + 1):
-                commit = 0
+                commit = 1
 
                 for i in range(balancerhost.__len__()):
                     if i == server_id: continue
 
                     last_commit = self.node[i]['last_commit']
-                    print("Last commit is " + str(last_commit))
 
                     if last_commit is None:
                         pass
@@ -323,7 +322,6 @@ class Heartbeat(Thread):
         # An infinite loop of spamming the target with append entry RPC if not consistent with leader
         # Or periodically send heartbeat if the target is consistent
         # The moment curr_term is changed, will terminate automatically
-        # TODO: Currently, each request is blocking, making the system relatively un-scalable. Fix this. Later.
 
         global raft_state, state, worker_load, load_log, worker_counter, election_end
 
@@ -348,19 +346,18 @@ class Heartbeat(Thread):
         still_leader = True
         while still_leader:
 
-            # For every other host other than this one,
+            beat_send = []
+
+            # For every other host other than this one, prepare to send the heartbeat
             for i in range(balancerhost.__len__()):
                 if i == server_id: continue
+                beat_send.append(Thread(target=self.send_heartbeat, args=[i, start_term]))
 
-                try:
-                    # Send the heartbeat to this host
-                    self.send_heartbeat(i, start_term)
-
-                # If an error occur during RPC, continue on
-                except:
-                    if verbose:
-                        print("EXCEPTION AT HEARTBEAT RPC")
-                        traceback.print_exc()
+            # Send all the heartbeat, and wait for it to return
+            for beat in beat_send:
+                beat.start()
+            for beat in beat_send:
+                beat.join()
 
             self.update_log_commit()
 
@@ -477,11 +474,18 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
         with log_lock:
             worker_id = worker_load.get_idle_worker()
-        url = workerhost[worker_id] + number.__str__()
+            load = worker_load.get_load(worker_id)
 
-        self.send_response(301)
-        self.send_header('Location', url)
-        self.end_headers()
+        if load >= 1000:
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(str("Semua server worker down").encode('utf-8'))
+
+        else:
+            url = workerhost[worker_id] + number.__str__()
+            self.send_response(301)
+            self.send_header('Location', url)
+            self.end_headers()
 
     def handle_update_workload(self, work_id, load):
         # Handle workload broadcast from the worker nodes
@@ -575,13 +579,9 @@ def get_port():
         exit()
 
 
-def main():
+if __name__ == "__main__":
 
-    global worker_load
-
-    # Initialize the datastore (reload data if exist)
     load_conf()
-    worker_load = workerLoad(workerhost.__len__())
 
     # Get the desired port and prepare the server
     current_port = get_port()
@@ -597,6 +597,11 @@ def main():
         exit()
     print("Balancer Server " + server_id.__str__() + " Running at port " + current_port.__str__())
 
+    # Initialize the datastore (reload data if exist)
+    worker_load = workerLoad(workerhost.__len__())
+    load_log = loadLog()
+    raft_state = raftState()
+
     # Start the first timer daemon and the server
     timer = TermTimeout()
     timer.daemon = True
@@ -605,4 +610,3 @@ def main():
 
     input("\nPress anything to exit..\n\n")
 
-if __name__ == "__main__": main()
