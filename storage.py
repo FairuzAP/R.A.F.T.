@@ -21,7 +21,7 @@ class workerLoad():
                 self.workerload = pickle.load(filedata)
         except Exception:
             self.file = open(self.filename, 'w')
-        print(self.filename)
+        #print(self.filename)
     
 
     def persistent_save(self):
@@ -68,6 +68,8 @@ class logTuple:
         self.idworker = idworker
         self.value = value
 
+    def __str__(self):
+        return str(self.term) + ": id=" + str(self.idworker) + ", val=" + str(self.value)
 
 class loadLog():
     # Interface to store the RAFT log, where each "act" is an invocation of the workerLoad set_load method
@@ -92,7 +94,7 @@ class loadLog():
                 self.log = pickle.load(filedata)
         except Exception:
             self.file = open(self.filename, 'w')
-        print(self.filename)
+        #print(self.filename)
 
     def persistent_save(self):
         with open(self.filename, 'wb') as filedata:
@@ -167,7 +169,6 @@ class loadLog():
         # Id gak ada -> x
         # Log ini sudah dicommit -> x
         # Commit log yang gak kontinu -> x
-
         if ( log_id > (self.nLog)):
             raise Exception('Specified LogID not found in log')
         elif ( log_id <= self.commitedLog):
@@ -214,7 +215,7 @@ class raftState():
                 self.votedFor = pickle.load(filedata)
         except Exception:
             self.file = open(self.filename, 'w')
-        print(self.filename)
+        #print(self.filename)
 
     def persistent_save(self):
         with open(self.filename, 'wb') as filedata:
@@ -241,9 +242,7 @@ class raftState():
         self.persistent_save()
 
 
-
-
-
+"""
 wload = workerLoad(9,2)
 for i in range(0,9):
     wload.set_load(i,50-(i*2))
@@ -276,5 +275,5 @@ print (raftstate.get_term())
 print (raftstate.get_voted_for())
 raftstate.set_voted_for(2)
 print (raftstate.get_voted_for())
-
+"""
 

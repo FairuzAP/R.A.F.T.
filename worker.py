@@ -12,7 +12,7 @@ import json
 
 
 # Timer constant definition
-DAEMON_DELAY = 5
+DAEMON_DELAY = 0.5
 RPC_TIMEOUT = 0.5
 
 # Global Variable definition

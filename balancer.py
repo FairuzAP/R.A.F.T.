@@ -14,11 +14,10 @@ import traceback
 
 
 # Timer constant definition
-TIME_SCALE = 1
-ELECTION_TIMEOUT = 5.0 * TIME_SCALE # Will be randomized by adding between -0.5 to 0.5
-WORKER_TIMEOUT = 10.0 * TIME_SCALE  # The time required of non-workload update for a worker to be presumed down
-HEARTBEAT_DELAY = 2 * TIME_SCALE    # Also the delay between request_vote RPC in candidacy
-RPC_TIMEOUT = 1                     # HTTP REST RPC Timeout
+ELECTION_TIMEOUT = 2.5   # Will be randomized by adding between -0.5 to 0.5
+WORKER_TIMEOUT = 5.0     # The time required of non-workload update for a worker to be presumed down
+HEARTBEAT_DELAY = 0.5    # Also the delay between request_vote RPC in candidacy
+RPC_TIMEOUT = 0.5        # HTTP REST RPC Timeout
 
 # Global Variable definition
 workerhost = []
@@ -265,6 +264,7 @@ class Heartbeat(Thread):
                 for j in range(self.node[i]['next_idx'], load_log.get_size() + 1):
                     next_log = load_log.get_log(j)
                     new_log.append({'worker_id': next_log['worker_id'], 'worker_load': next_log['worker_load']})
+                    break
 
             # Send the apropriate RPC according to the host log stat
             res = self.do_append_entry(i, **{
@@ -446,7 +446,7 @@ class BalancerHandler(BaseHTTPRequestHandler):
                             if not kwargs['new_log']:
                                 print("Empty valid Heartbeat received")
                             else:
-                                print("Heartbeat received: " + kwargs['new_log'].__str__())
+                                print("Heartbeat received: " + kwargs.__str__())
 
                             # Check if the RPC contains new log to record, and append it if exist
                             i = 1
@@ -456,6 +456,8 @@ class BalancerHandler(BaseHTTPRequestHandler):
 
                             # Commit all the committed log
                             for i in range(load_log.get_last_commited_id() + 1, kwargs['commit_idx'] + 1):
+                                if load_log.get_size() < i:
+                                    break
                                 if not load_log.is_commited(i):
                                     print("Commiting log id " + str(i))
                                     load_log.commit_log(i,worker_load)
@@ -534,6 +536,8 @@ class BalancerHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     # def log_message(self, format, *args): return
+
+    def log_message(self, format, *args): return
 
 
 def load_conf():
